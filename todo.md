@@ -78,7 +78,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] `cfn-lint` clean on the final template (exit 0)
 - [x] CI green on Node 20 and Node 24 for the earlier MVP commit (`6a22a5e`)
 - [x] Earlier production artifact verified against the GitHub contents API and raw URL
-- [ ] Push invite/field-schema commit and verify new CI run + raw artifact
+- [x] Push invite/field-schema commit and verify new CI run + raw artifact (commit `9d0d23e`, CI run `42298202063` green on Node 20/24; template 49,922 bytes, sha256 `70ce427d...`, raw `main` matches)
 - [ ] BLOCKED: deploy stack to a real AWS account (no AWS CLI/credentials here)
 - [ ] BLOCKED: live Encompass token exchange / loan read / loan write (no Encompass access)
 - [ ] BLOCKED: API Gateway key provisioning against real AWS API Gateway

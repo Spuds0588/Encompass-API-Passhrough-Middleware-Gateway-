@@ -147,3 +147,23 @@ a new dated entry.
 - Pending at this entry: commit, push, new CI run, and raw artifact verification.
   Still BLOCKED: real AWS deployment, API Gateway key creation, real Encompass
   OAuth/loans, and the live schema response shape.
+
+## 2026-11-06 — Invite/field-schema CI and production artifact verification
+
+- Pushed commit `9d0d23e` (`feat: add role-scoped invites and field schema
+  discovery`) to `main`. GitHub Actions CI run `42298202063` completed successfully
+  for both Node 20 and Node 24.
+- Artifact evidence at that commit:
+  - `template.yaml`: 49,922 bytes, sha256
+    `70ce427d33b4ef82e23dc64cd318716cda359819957dfbfd8cc0078db55f70dd`,
+    git blob `54f4c08d5ac605f52ced40a3da8823aa37bdd172`. The GitHub contents API
+    blob matches, and both the commit-pinned raw URL and the raw `main` URL (used
+    by `deploy.sh`) returned byte-identical content on the first poll.
+  - `deploy.sh`: git blob `83ddfd0d3596b6e6c7e29b894fda87e5dc227941` matches the
+    contents API; raw `main` sha256
+    `55dedeea31b438cc157c8db053078d8e10bb3ece04a26e08b3194097b74aa84c` matches
+    the local file. The installer will therefore fetch the verified template.
+- This docs/evidence follow-up commit does not change `template.yaml`, `deploy.sh`,
+  or handler bytes, so the artifact hashes above remain the deployed content.
+- Still BLOCKED: real AWS deployment, API Gateway key creation, real Encompass
+  OAuth/loans, and the live schema response shape.
