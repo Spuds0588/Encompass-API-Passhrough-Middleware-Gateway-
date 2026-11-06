@@ -399,3 +399,25 @@ a new dated entry.
   bytes (824 bytes under the direct-upload limit); `npm test` passed 50/50. No AWS
   or live Encompass validation was possible. Pending at this entry: commit, push,
   exact-commit CI, Pages build, raw artifact checks, and cleanup.
+
+## 2026-11-06 — Field writeability/retention hardening production verification
+
+- Pushed commit `83f0057ef7a6236ee921879c77f6dd1b83d7c6ce` (`feat: expose field
+  writeability and harden retention`) to `main`.
+- CI run `42305287711` completed successfully on that exact SHA for Node 20 and
+  Node 24.
+- GitHub Pages build completed as `built` (created `2026-11-06T22:30:56Z`). The
+  live page returned HTTP 200 with `text/html; charset=utf-8` and HSTS
+  `max-age=31556952`; `index.html` was byte-identical. `llms.txt`, `robots.txt`,
+  and `sitemap.xml` also returned 200 and matched local bytes.
+- Raw `main` matched local bytes for `README.md`, `agents.md`, `llms.txt`,
+  `todo.md`, `history.md`, `index.html`, and `template.yaml`. Template size is
+  50,376 bytes, sha256
+  `c2bd3f9e73edea394623b230ea624159cf3f784a864b8c9668d4b01ebb4653e6`.
+- The broker verification stands: field-level 1003 writes and `readOnly`/
+  `fieldLock` metadata are supported; eFolder borrower documents, enhanced
+  conditions, and structured 1003/application submission are not. No AWS or live
+  Encompass validation is claimed.
+- This post-push entry is itself a docs-only follow-up commit; its CI, Pages, raw
+  `history.md`/`todo.md`, clean-worktree, and cleanup checks are reported in the
+  delivery response.
