@@ -73,7 +73,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Unit + integration tests with fake Encompass and in-memory AWS (Node `node:test`)
 - [x] Production-shaped HTTP e2e: portal invite → key → fields → read → enqueue → worker → job → retry
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, invite parameters, native schema paths, size, in-sync
-- [x] 41/41 tests passing locally (`npm run verify`)
+- [x] 45/45 tests passing locally (`npm run verify`)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
 - [x] `cfn-lint` clean on the final template (exit 0)
 - [x] CI green on Node 20 and Node 24 for the earlier MVP commit (`6a22a5e`)
@@ -83,6 +83,16 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [ ] BLOCKED: live Encompass token exchange / loan read / loan write (no Encompass access)
 - [ ] BLOCKED: API Gateway key provisioning against real AWS API Gateway
 - [ ] BLOCKED: real standard/custom field schema response shape against an Encompass instance
+
+## Phase 7 — Community support and discoverability (2026-11-06)
+
+- [x] `CONTRIBUTING.md` with bug-report, sanitization, testing, and PR workflow
+- [x] `llms.txt` for LLMs/coding agents, including upstreaming and live-verification rules
+- [x] `index.html` with SEO metadata, JSON-LD FAQ/software schema, and contribution links
+- [x] `robots.txt` and `sitemap.xml` for the GitHub Pages project page
+- [x] Shared-responsibility language in `README.md` and `agents.md`
+- [x] `test/static.test.js` guards for contribution links, metadata, schemas, and sitemap
+- [ ] Verify the GitHub Pages build and CI run for the community-support commit
 
 ## Deferred (YAGNI, not in MVP)
 

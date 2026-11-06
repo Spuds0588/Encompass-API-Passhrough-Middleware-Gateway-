@@ -215,3 +215,31 @@ a new dated entry.
 - Still BLOCKED: real AWS deployment, API Gateway key creation, DynamoDB/SQS
   behavior, Encompass OAuth/loan calls, and live standard/custom schema responses
   because this machine has no AWS account/CLI and no Encompass credentials.
+
+## 2026-11-06 — Community support, agent guidance, and SEO/AEO
+
+- Added `CONTRIBUTING.md`: community-supported expectation, bug-report checklist,
+  sanitization rules, local test commands, PR requirements, and guidance for
+  contributors who can test a real Encompass tenant or AWS account.
+- Added `llms.txt`: canonical links, API summary, local commands, community
+  contract, explicit instructions for coding agents to upstream fixes, and an
+  honest list of verified versus unverified behavior.
+- Added `index.html`: a static, dependency-free GitHub Pages landing page with
+  canonical URL, description, Open Graph/Twitter metadata, `SoftwareSourceCode`
+  and `FAQPage` JSON-LD, API summary, field-schema example, agent links, and a
+  prominent shared-responsibility/issue/PR section.
+- Added `robots.txt` and `sitemap.xml` for the GitHub Pages project URL
+  `https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/`.
+- Updated `README.md` and `agents.md` with the community-support contract: the
+  maintainers cannot run a live Encompass developer instance or lender AWS account,
+  so validation is shared; bugs and fixes should go through GitHub issues and pull
+  requests, with secrets, invite codes, tokens, and loan data redacted.
+- Added `test/static.test.js` (4 tests) covering required community files,
+  `llms.txt` agent instructions, index SEO/AEO metadata and valid JSON-LD, and the
+  robots/sitemap canonical URL. Test count is now 45.
+- Verification before push: `npm run verify` passed 45/45; JSON-LD parsed as
+  `WebSite,SoftwareSourceCode,FAQPage` with 7 FAQ entries. No handler, template,
+  or installer bytes changed; `template.yaml` remains 49,922 bytes.
+- Pending at this entry: commit, push, CI run, GitHub Pages build, and raw GitHub
+  artifact checks. Limitations remain: no live AWS or Encompass validation, and
+  the page is static documentation, not a hosted runtime gateway.

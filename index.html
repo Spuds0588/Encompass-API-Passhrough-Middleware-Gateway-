@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Encompass API Passthrough Gateway | Community-Supported AWS Middleware</title>
+  <meta name="description" content="Community-supported, open-source AWS middleware for ICE Encompass: field-filtered reads, async FIFO writes, role-scoped vendor onboarding, and live standard and custom field schema discovery. Deploy with one CloudFormation template.">
+  <meta name="keywords" content="Encompass API, ICE Encompass, mortgage middleware, AWS Lambda, CloudFormation, API gateway, field schema, Encompass custom fields, open source">
+  <meta name="author" content="Community contributors">
+  <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large,max-video-preview:-1">
+  <meta name="theme-color" content="#07111f">
+  <link rel="canonical" href="https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/">
+  <link rel="alternate" type="text/plain" href="./llms.txt" title="llms.txt">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Encompass API Passthrough Gateway">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Encompass API Passthrough Gateway">
+  <meta property="og:description" content="Community-supported AWS middleware for field-filtered Encompass reads, async writes, role-scoped invites, and field schema discovery.">
+  <meta property="og:url" content="https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Encompass API Passthrough Gateway">
+  <meta name="twitter:description" content="Community-supported, open-source AWS middleware for ICE Encompass.">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/#website",
+        "url": "https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/",
+        "name": "Encompass API Passthrough Gateway",
+        "description": "Community-supported, open-source AWS middleware for ICE Encompass.",
+        "inLanguage": "en"
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "@id": "https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/#software",
+        "name": "Encompass API Passthrough Gateway",
+        "description": "Stateless AWS middleware for field-filtered Encompass reads, asynchronous FIFO writes, role-scoped self-serve onboarding, and standard and custom field schema discovery.",
+        "codeRepository": "https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-",
+        "license": "https://opensource.org/license/mit",
+        "programmingLanguage": {
+          "@type": "ComputerLanguage",
+          "name": "JavaScript"
+        },
+        "runtimePlatform": "Node.js 24 on AWS Lambda",
+        "applicationCategory": "DeveloperApplication",
+        "isAccessibleForFree": true
+      },
+      {
+        "@type": "FAQPage",
+        "@id": "https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/#faq",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is the Encompass API Passthrough Gateway?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "It is a stateless AWS middleware template that gives vendors a small, stable API for field-filtered ICE Encompass reads, asynchronous writes, role-scoped API key onboarding, and field schema discovery. It does not store loan data."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is this project affiliated with ICE Mortgage Technology?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. This is an independent, community-supported open-source template. It is not affiliated with or endorsed by ICE Mortgage Technology. Encompass is a trademark of its respective owner."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does the gateway store loan data?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. It reads from Encompass on demand and proxies writes. It stores tenant mappings, short-lived OAuth tokens, job status, and short-lived in-memory read projections, not loan payloads."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Has this been tested against a live Encompass instance?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "The maintainers do not have access to a live Encompass developer instance or a lender AWS account. CI and local fakes verify routing, auth, caching, retries, and template integrity. Real-instance validation is a shared community responsibility and should be performed in each deployment environment."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How do I report a bug or contribute a fix?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Open a GitHub issue with a minimal reproduction, sanitized logs, and the commit you tested. Submit fixes as pull requests with a regression test and updated docs. Never include client secrets, API keys, invite codes, loan data, or personal information."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What Encompass roles are supported?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "The template supports title and settlement, TPO and broker, and AMC and appraisal roles. Each role is mapped server-side to its own Encompass service-account persona."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What license is the project under?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "The project is released under the MIT License."
+            }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: #0e1b2c;
+      --panel-2: #122237;
+      --line: #27405d;
+      --text: #e8f0f7;
+      --muted: #9fb2c6;
+      --accent: #69d3b0;
+      --accent-2: #8ab4ff;
+      --warn: #f7c873;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(105, 211, 176, 0.13), transparent 34rem),
+        radial-gradient(circle at 88% 12%, rgba(138, 180, 255, 0.12), transparent 30rem),
+        var(--bg);
+      font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--accent-2); }
+    a:hover { color: #b9d1ff; }
+    .skip {
+      position: absolute;
+      left: -999px;
+      top: 0;
+      padding: 10px 14px;
+      background: var(--accent);
+      color: #04100b;
+      z-index: 10;
+    }
+    .skip:focus { left: 16px; top: 16px; }
+    .wrap { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    .site-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 22px 0;
+      border-bottom: 1px solid rgba(39, 64, 93, 0.7);
+      flex-wrap: wrap;
+    }
+    .brand {
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 750;
+      letter-spacing: -0.02em;
+    }
+    .brand span { color: var(--accent); }
+    .site-nav { display: flex; gap: 18px; flex-wrap: wrap; font-size: 14px; }
+    .site-nav a { color: var(--muted); text-decoration: none; }
+    .site-nav a:hover { color: var(--text); }
+    main { padding: 34px 0 60px; }
+    .hero { padding: 26px 0 18px; max-width: 850px; }
+    .kicker {
+      margin: 0 0 14px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      max-width: 900px;
+      font-size: clamp(34px, 6vw, 62px);
+      line-height: 1.04;
+      letter-spacing: -0.045em;
+    }
+    .lede { max-width: 760px; margin: 22px 0 0; color: var(--muted); font-size: clamp(17px, 2vw, 20px); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 26px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 650;
+      background: var(--panel);
+    }
+    .button.primary { background: var(--accent); border-color: var(--accent); color: #04100b; }
+    .button:hover { border-color: var(--accent-2); color: var(--text); }
+    .button.primary:hover { background: #85e4c4; color: #04100b; }
+    .quickfacts {
+      display: flex;
+      gap: 10px 24px;
+      flex-wrap: wrap;
+      margin: 30px 0 0;
+      padding: 0;
+      list-style: none;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .quickfacts li::before { content: "•"; color: var(--accent); margin-right: 8px; }
+    section { margin-top: 52px; }
+    h2 { margin: 0 0 12px; font-size: clamp(23px, 3vw, 31px); letter-spacing: -0.03em; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    p { margin: 0 0 14px; }
+    .muted { color: var(--muted); }
+    .community {
+      margin-top: 40px;
+      padding: 24px;
+      border: 1px solid #4f6b36;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(105, 211, 176, 0.08), rgba(138, 180, 255, 0.05));
+    }
+    .community h2 { margin-bottom: 8px; }
+    .community strong { color: var(--accent); }
+    .community ul { margin: 14px 0 0; padding-left: 20px; color: var(--muted); }
+    .community li { margin: 7px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-top: 20px; }
+    .card { padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: rgba(14, 27, 44, 0.86); }
+    .card p { margin: 0; color: var(--muted); font-size: 14px; }
+    .card code { color: var(--warn); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { font-size: 0.9em; }
+    pre {
+      margin: 14px 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #020914;
+      color: #cfe0f0;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .table-wrap { overflow-x: auto; margin-top: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    td code { color: var(--warn); }
+    .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+    .agent-box { padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+    .agent-box p:last-child { margin-bottom: 0; }
+    details { border-bottom: 1px solid var(--line); padding: 15px 0; }
+    summary { cursor: pointer; color: var(--text); font-weight: 650; }
+    details p { margin: 9px 0 0; color: var(--muted); }
+    footer { margin-top: 62px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    footer p { margin: 0 0 8px; }
+    @media (max-width: 720px) {
+      .split { grid-template-columns: 1fr; }
+      .site-nav { gap: 12px; }
+      section { margin-top: 40px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header class="site-header">
+      <a class="brand" href="./">Encompass <span>Gateway</span></a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#capabilities">Capabilities</a>
+        <a href="#deploy">Deploy</a>
+        <a href="#community">Community</a>
+        <a href="#faq">FAQ</a>
+        <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/issues">Issues</a>
+        <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <p class="kicker">Community-supported · MIT · AWS Lambda</p>
+        <h1 id="hero-title">A small, stable API in front of ICE Encompass.</h1>
+        <p class="lede">An open-source, stateless middleware template for field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, and live standard and custom field schema discovery. It deploys into the lender's AWS account and never stores loan data.</p>
+        <div class="actions">
+          <a class="button primary" href="#deploy">Deploy the template</a>
+          <a class="button" href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">Read the source</a>
+          <a class="button" href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/issues/new">Report a bug</a>
+        </div>
+        <ul class="quickfacts">
+          <li>One CloudFormation file</li>
+          <li>Vendor-owned API keys</li>
+          <li>No loan payload storage</li>
+          <li>Node.js 24 on Lambda</li>
+        </ul>
+      </section>
+
+      <section class="community" id="community" aria-labelledby="community-title">
+        <h2 id="community-title">Built in public. Tested by the community.</h2>
+        <p><strong>This is a community-supported template, not a vendor-hosted product.</strong> The maintainers cannot spin up a live Encompass developer instance or a lender AWS account to reproduce every environment, field shape, or tenant configuration. Real-world validation is a shared responsibility.</p>
+        <p>If something breaks, please upstream what you learn so the next lender does not hit the same bug.</p>
+        <ul>
+          <li><strong>Found a bug?</strong> Open a GitHub issue with a minimal reproduction, sanitized logs, and the commit you tested.</li>
+          <li><strong>Fixed something?</strong> Submit a pull request with a regression test and the docs updated.</li>
+          <li><strong>Validated a field shape?</strong> Contribute a sanitized fixture or a fake-response case so the test suite covers it.</li>
+          <li><strong>Need the rules?</strong> Read <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> and <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/agents.md">agents.md</a> before changing code.</li>
+        </ul>
+      </section>
+
+      <section id="capabilities" aria-labelledby="capabilities-title">
+        <h2 id="capabilities-title">What it does</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Field-filtered reads</h3>
+            <p><code>GET /v1/loans/{id}?fields=11,12,1109</code> returns only the requested fields, with a 30-second per-container cache scoped by persona.</p>
+          </article>
+          <article class="card">
+            <h3>Async FIFO writes</h3>
+            <p><code>PATCH /v1/loans/{id}</code> validates and enqueues a job, returns <code>202</code>, and retries Encompass file locks through SQS.</p>
+          </article>
+          <article class="card">
+            <h3>Role-scoped onboarding</h3>
+            <p>Title, broker, and appraisal invite links provision API keys locked to a server-side Encompass service-account persona. No admin token.</p>
+          </article>
+          <article class="card">
+            <h3>Field schema discovery</h3>
+            <p><code>GET /v1/fields?ids=11,646,CX.TITLE.STATUS</code> resolves standard and <code>CX.*</code> custom fields from Encompass's native schema APIs.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="deploy" aria-labelledby="deploy-title">
+        <h2 id="deploy-title">Deploy in one line</h2>
+        <p class="muted">Run inside AWS CloudShell, or upload the committed <code>template.yaml</code> directly in CloudFormation. The installer asks for the Encompass instance ID, API client ID, and client secret, then prints the gateway URL and three role-scoped invite links.</p>
+        <pre><code>bash &lt;(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)</code></pre>
+        <p class="muted">Full parameter reference, smoke tests, and local development instructions are in the <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/README.md">README</a>.</p>
+      </section>
+
+      <section aria-labelledby="api-title">
+        <h2 id="api-title">API at a glance</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>GET</code></td><td><code>/health</code></td><td>Unauthenticated health check</td></tr>
+              <tr><td><code>GET</code></td><td><code>/portal?role=title&amp;code=...</code></td><td>Persona-locked invite page and field cheat sheet</td></tr>
+              <tr><td><code>POST</code></td><td><code>/portal</code></td><td>Provision an API key from a role invite</td></tr>
+              <tr><td><code>GET</code></td><td><code>/v1/fields?ids=...</code></td><td>Standard and custom field definitions</td></tr>
+              <tr><td><code>GET</code></td><td><code>/v1/loans/{id}?fields=...</code></td><td>Field-filtered loan read</td></tr>
+              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}</code></td><td>Enqueue an asynchronous loan update</td></tr>
+              <tr><td><code>GET</code></td><td><code>/v1/jobs/{id}</code></td><td>Job status, scoped to the owning tenant</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="fields-title">
+        <div class="split">
+          <div>
+            <h2 id="fields-title">Field discovery</h2>
+            <p class="muted">The lender's custom fields are invisible to public ICE documentation. The gateway queries the lender's own Encompass schema on demand and returns the authoritative definitions.</p>
+            <pre><code>curl -s "$GATEWAY_URL/v1/fields?ids=11,646,CX.TITLE.STATUS" \
+  -H "x-api-key: $KEY"</code></pre>
+          </div>
+          <div>
+            <h3>Example response</h3>
+            <pre><code>{
+  "11": {
+    "description": "Subject Property Address",
+    "type": "STRING"
+  },
+  "646": {
+    "description": "Title - Lender Title Insurance",
+    "type": "DECIMAL"
+  },
+  "CX.TITLE.STATUS": {
+    "description": "Custom Title Milestone Status",
+    "type": "STRING"
+  }
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="agents-title">
+        <div class="split">
+          <div>
+            <h2 id="agents-title">For developers and coding agents</h2>
+            <p class="muted">The repository is designed to be read by both people and agents. Start with the operating manual and the machine-readable project summary, then run the local checks before proposing a change.</p>
+            <p><a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/agents.md">agents.md</a> · <a href="./llms.txt">llms.txt</a> · <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a></p>
+          </div>
+          <div class="agent-box">
+            <h3>Shared responsibility</h3>
+            <p>If an agent finds a bug while deploying this template, it should not stop at a local patch. Add a regression test, update the relevant docs, open an issue if one does not exist, and send the fix upstream.</p>
+            <p>Do not claim live Encompass or AWS verification unless it actually happened. Do not paste secrets, API keys, invite codes, loan data, or personal information into issues or pull requests.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="faq" aria-labelledby="faq-title">
+        <h2 id="faq-title">Common questions</h2>
+        <details>
+          <summary>What is the Encompass API Passthrough Gateway?</summary>
+          <p>It is a stateless AWS middleware template that gives vendors a small, stable API for field-filtered ICE Encompass reads, asynchronous writes, role-scoped API key onboarding, and field schema discovery. It does not store loan data.</p>
+        </details>
+        <details>
+          <summary>Is this project affiliated with ICE Mortgage Technology?</summary>
+          <p>No. This is an independent, community-supported open-source template. It is not affiliated with or endorsed by ICE Mortgage Technology. Encompass is a trademark of its respective owner.</p>
+        </details>
+        <details>
+          <summary>Does the gateway store loan data?</summary>
+          <p>No. It reads from Encompass on demand and proxies writes. It stores tenant mappings, short-lived OAuth tokens, job status, and short-lived in-memory read projections, not loan payloads.</p>
+        </details>
+        <details>
+          <summary>Has this been tested against a live Encompass instance?</summary>
+          <p>The maintainers do not have access to a live Encompass developer instance or a lender AWS account. CI and local fakes verify routing, auth, caching, retries, and template integrity. Real-instance validation is a shared community responsibility and should be performed in each deployment environment.</p>
+        </details>
+        <details>
+          <summary>How do I report a bug or contribute a fix?</summary>
+          <p>Open a <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/issues/new">GitHub issue</a> with a minimal reproduction, sanitized logs, and the commit you tested. Submit fixes as <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/pulls">pull requests</a> with a regression test and updated docs. Never include client secrets, API keys, invite codes, loan data, or personal information.</p>
+        </details>
+        <details>
+          <summary>What Encompass roles are supported?</summary>
+          <p>The template supports title and settlement, TPO and broker, and AMC and appraisal roles. Each role is mapped server-side to its own Encompass service-account persona.</p>
+        </details>
+        <details>
+          <summary>What license is the project under?</summary>
+          <p>The project is released under the <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/LICENSE">MIT License</a>.</p>
+        </details>
+      </section>
+    </main>
+
+    <footer>
+      <p>Encompass API Passthrough Gateway · community-supported · MIT License · <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">GitHub</a> · <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/issues">Issues</a> · <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/pulls">Pull requests</a></p>
+      <p>Not affiliated with or endorsed by ICE Mortgage Technology. Encompass is a trademark of its respective owner. No loan data is stored by this project.</p>
+    </footer>
+  </div>
+</body>
+</html>

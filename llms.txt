@@ -1,0 +1,71 @@
+# Encompass API Passthrough Gateway
+
+> An open-source, community-supported AWS middleware template for ICE Encompass: field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, and standard/custom field schema discovery. It stores no loan data. It is not affiliated with or endorsed by ICE Mortgage Technology. The maintainers cannot run a live Encompass developer instance or a lender AWS account; real-world validation is a shared community responsibility. Report reproducible bugs and upstream fixes through GitHub.
+
+## Canonical resources
+
+- [Project landing page](https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/): public overview, API summary, FAQ, and community expectations.
+- [README](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/README.md): deployment, API, security, and known limitations.
+- [Agent directions](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/agents.md): operating manual for coding agents and maintainers.
+- [Contributing guide](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/CONTRIBUTING.md): bug reports, pull requests, tests, and redaction rules.
+- [Source code](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-): the deployed Lambda, template, tests, installer, and local fakes.
+- [Open issues](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/issues): check for an existing report before opening a new one.
+- [Pull requests](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/pulls): fixes, tests, docs, and sanitized field-shape fixtures are welcome.
+- [License](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/LICENSE): MIT.
+
+## What it does
+
+- Deploys one self-contained AWS Lambda behind API Gateway, with DynamoDB, SQS FIFO plus DLQ, Secrets Manager, and a single CloudFormation template.
+- Reads ICE Encompass loan fields on demand and returns only the requested projection. Reads are cached for 30 seconds per persona in Lambda memory.
+- Queues writes asynchronously through SQS FIFO, grouped by loan, and retries Encompass file locks, throttling, and 5xx responses up to five attempts.
+- Provides role-scoped invite onboarding for title/settlement, TPO/broker, and AMC/appraisal partners. The server chooses the Encompass persona from the role; clients cannot choose it.
+- Proxies the native standard and custom field schema APIs through `GET /v1/fields?ids=...`.
+- Never persists loan payloads. It stores tenant mappings, short-lived persona tokens, job status, and non-persistent read projections.
+
+## API surface
+
+- `GET /health`
+- `GET /portal` and `GET /portal?role=title&code=...`
+- `POST /portal` with `role`, `code`, `tenantName`, and `email`
+- `GET /v1/fields?ids=11,646,CX.TITLE.STATUS`
+- `GET /v1/loans/{loanId}?fields=11,12,1109`
+- `PATCH /v1/loans/{loanId}` with a `fields` object
+- `GET /v1/jobs/{jobId}`
+
+All `/v1/*` routes require `x-api-key`. The portal and health check are the only unauthenticated HTTP routes.
+
+## Deploy and verify locally
+
+- One-line installer: `bash <(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)`
+- Local gateway: `npm run dev`
+- Tests and template sync: `npm run verify`
+- Regenerate the committed CloudFormation artifact after handler/template changes: `npm run build`
+- No npm runtime dependencies are used. CI covers Node 20 and Node 24; the Lambda runtime is Node.js 24.
+- The local fake Encompass covers OAuth, loans, 423 lock retries, and standard/custom schema responses. Local tests are not a substitute for testing a real Encompass tenant or AWS stack.
+
+## Community contract
+
+- This project is shared infrastructure, not a paid supported product. If you deploy it, you are part of the testing community.
+- Check existing GitHub issues before reporting. Include the commit, Node version, a minimal reproduction, expected versus actual behavior, sanitized logs, and whether the issue is reproducible with the local fake.
+- Never include client secrets, API keys, invite codes, OAuth tokens, loan data, or personal information in an issue, pull request, screenshot, or log.
+- If you find and fix a bug in a private deployment, upstream the smallest fix with a regression test. Do not leave the fix only in a fork.
+- If you can test a real Encompass instance or AWS account, report what worked, what failed, and any sanitized response-shape differences. That evidence is more valuable than a speculative patch.
+- Keep `README.md`, `agents.md`, `CONTRIBUTING.md`, this file, and the static landing page in sync when behavior changes.
+
+## Instructions for coding agents
+
+1. Read `agents.md` and `CONTRIBUTING.md` before changing code.
+2. Do not invent Encompass endpoints or field formats. Use the native schema endpoints already implemented and the existing fake for tests.
+3. Reproduce a bug with the smallest test first, then change the handler or template. Never weaken an assertion to make CI pass.
+4. Run `npm run verify` before proposing a change. If `src/gateway.js` or `infra/template.yaml` changed, run `npm run build` first.
+5. If the behavior or API changes, update the README, agent directions, static page, and `llms.txt` in the same change.
+6. If the bug exists upstream, open a GitHub issue with a minimal reproduction and submit a pull request. If a fix cannot be contributed, say so explicitly and explain why.
+7. Do not claim live Encompass or AWS verification unless it actually occurred. Local fakes, CI, and static checks do not prove a real tenant works.
+8. Redact secrets and loan data. Do not add credentials, tokens, invite codes, or customer data to the repository, tests, issues, or generated pages.
+
+## Verification status and limitations
+
+- Verified locally and in CI: handler routing, invite validation and persona locking, field schema lookup and caching, reads and projections, async writes, retry behavior, template sync, and template size.
+- Not verified by the maintainers: a real CloudFormation deployment, API Gateway key creation, DynamoDB/SQS behavior, live Encompass OAuth, loan reads/writes, and the exact standard/custom schema response shape for every Encompass tenant.
+- Known limitations: one shared usage plan, global per-role invite codes rather than single-use vendor invites, no revocation UI, no CORS, and a curated 11-field cheat sheet whose custom fields only appear through a live schema lookup.
+- The static landing page is served from GitHub Pages. The runtime API is deployed separately into each lender's AWS account.

@@ -9,6 +9,23 @@ never store loan data.
 
 Source of truth for scope: `chat-encompass-api-middleware-gatew-google-ai-studio-2026-11-06-1454.md`.
 
+## Community support is part of the job
+
+This is an independent, community-supported template. The maintainer cannot run a
+live Encompass developer instance or a lender AWS account, so real-world validation
+is a shared responsibility. Agents working here must not imply otherwise.
+
+- When you find a bug, add a regression test and upstream the smallest fix via a
+  GitHub issue and pull request. Do not leave the fix only in a private fork.
+- If a fix cannot be contributed, say so explicitly and explain the limitation.
+- Read and follow `CONTRIBUTING.md`; point developers there, to `llms.txt`, and to
+  the project page for the shared-testing expectations.
+- Never put client secrets, API keys, invite codes, OAuth tokens, loan data, or PII
+  in issues, pull requests, logs, screenshots, or committed files.
+- If behavior or API changes, update `README.md`, `llms.txt`, `index.html`, and this
+  file in the same change. Keep `todo.md` current and append to `history.md`.
+- Do not claim live Encompass or AWS verification unless it actually happened.
+
 ## Non-negotiable principles
 
 1. **YAGNI.** Build only what the dev doc requires. No loan mirror, no sync engine,
@@ -44,14 +61,18 @@ Source of truth for scope: `chat-encompass-api-middleware-gatew-google-ai-studio
 | `dev/fake-encompass.js` | Local fake OAuth + loans + standard/custom field schema upstream, including 423 lock simulation. |
 | `dev/memory-store.js` | In-memory storage/queue adapter for local runs. Never deployed. |
 | `dev/server.js` | Local API Gateway + SQS emulator around the real handler. |
-| `test/*.test.js` | Unit, end-to-end HTTP, and template tests (Node built-in runner). |
+| `test/*.test.js` | Unit, end-to-end HTTP, template, and static-page tests (Node built-in runner). |
+| `index.html` | Static SEO/AEO landing page served from GitHub Pages. |
+| `llms.txt` | Machine-readable project guide for LLMs and coding agents. |
+| `CONTRIBUTING.md` | Community bug-report, testing, and pull-request workflow. |
+| `robots.txt`, `sitemap.xml` | Crawler policy and sitemap for the static page. |
 | `.github/workflows/ci.yml` | Runs tests and template-sync check on push/PR. |
 
 ## Commands
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 41 tests: unit, HTTP e2e, template guards
+npm test          # 45 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -103,7 +124,10 @@ npm run dev       # local gateway at :3000 with fake Encompass
 3. `npm run build` if `src/gateway.js` or `infra/template.yaml` changed.
 4. `npm run verify`; fix causes, never weaken assertions.
 5. Update `todo.md` (tick it) and append to `history.md` (what changed, evidence).
-6. Commit. Push only when the user asks.
+   If behavior or API changed, also update `README.md`, `llms.txt`, `index.html`,
+   and this file.
+6. Commit. Push only when the user asks. Open a pull request when contributing to
+   a shared deployment so the fix is visible to the community.
 
 ## Deployment and verification reality
 
