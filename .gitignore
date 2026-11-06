@@ -1,0 +1,8 @@
+node_modules/
+.env
+.env.*
+dist/
+packaged.yaml
+.aws-sam/
+*.log
+.DS_Store

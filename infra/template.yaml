@@ -1,0 +1,331 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Encompass API Passthrough & Middleware Gateway: field-filtered read proxy,
+  async FIFO write pipeline with retries, and a self-serve API key portal.
+
+Parameters:
+  EncompassInstanceId:
+    Type: String
+    MinLength: 1
+    Description: Encompass instance ID, e.g. BE11122233.
+  EncompassClientId:
+    Type: String
+    MinLength: 1
+    Description: Encompass OAuth client ID for this instance.
+  EncompassClientSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 1
+    Description: Encompass OAuth client secret. Stored in Secrets Manager.
+  AdminPortalToken:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Shared secret required to provision API keys from the admin portal.
+  EncompassBaseUrl:
+    Type: String
+    Default: https://api.elliemae.com
+    Description: Encompass API base URL.
+  LogRetentionInDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 3653
+
+Resources:
+  EncompassSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/encompass-client-secret"
+      Description: Encompass OAuth client secret used by the passthrough gateway.
+      SecretString: !Ref EncompassClientSecret
+
+  TenantsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: apiKeyId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: apiKeyId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  TokensTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: encompassUserId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: encompassUserId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-writes-dlq.fifo"
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+
+  WriteQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-writes.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: gateway-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt TenantsTable.Arn
+                  - !GetAtt TokensTable.Arn
+                  - !GetAtt JobsTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt WriteQueue.Arn
+                  - !GetAtt DeadLetterQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref EncompassSecret
+              - Effect: Allow
+                Action: apigateway:POST
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apikeys"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/usageplans/${UsagePlan}/keys"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-gateway:*"
+
+  GatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${GatewayFunction}"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  GatewayFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-gateway"
+      Description: Encompass passthrough gateway (portal, reads, async writes).
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 29
+      Role: !GetAtt GatewayRole.Arn
+      Environment:
+        Variables:
+          TENANT_TABLE: !Ref TenantsTable
+          TOKEN_TABLE: !Ref TokensTable
+          JOB_TABLE: !Ref JobsTable
+          WRITE_QUEUE_URL: !Ref WriteQueue
+          USAGE_PLAN_ID: !Ref UsagePlan
+          ENCOMPASS_BASE_URL: !Ref EncompassBaseUrl
+          ENCOMPASS_CLIENT_ID: !Ref EncompassClientId
+          ENCOMPASS_INSTANCE_ID: !Ref EncompassInstanceId
+          ENCOMPASS_SECRET_ARN: !Ref EncompassSecret
+          ADMIN_TOKEN: !Ref AdminPortalToken
+      Code:
+        ZipFile: |
+          //__GATEWAY_CODE__
+
+  WriteEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt WriteQueue.Arn
+      FunctionName: !Ref GatewayFunction
+      BatchSize: 10
+      Enabled: true
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      ScalingConfig:
+        MaximumConcurrency: 5
+
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      Description: Encompass passthrough gateway API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  PortalResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: portal
+
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: health
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: "{proxy+}"
+
+  PortalGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref PortalResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  PortalPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref PortalResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  HealthGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  ProxyAny:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway/invocations"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PortalGet
+      - PortalPost
+      - HealthGet
+      - ProxyAny
+    Properties:
+      RestApiId: !Ref Api
+      Description: Encompass gateway deployment
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      Description: Vendor usage plan (rate limit and daily quota)
+      ApiStages:
+        - ApiId: !Ref Api
+          Stage: !Ref ApiStage
+      Throttle:
+        RateLimit: 50
+        BurstLimit: 100
+      Quota:
+        Limit: 100000
+        Period: DAY
+
+  ApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GatewayFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/*"
+
+Outputs:
+  GatewayUrl:
+    Description: Base URL for vendor API calls.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  AdminPortalUrl:
+    Description: Self-serve API key portal.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/portal"
+  HealthUrl:
+    Description: Unauthenticated health check.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/health"
+  WriteQueueUrl:
+    Description: FIFO queue that buffers Encompass writes.
+    Value: !Ref WriteQueue

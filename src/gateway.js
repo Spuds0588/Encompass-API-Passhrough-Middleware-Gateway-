@@ -1,0 +1,622 @@
+"use strict";
+
+/**
+ * Encompass API Passthrough & Middleware Gateway - single Lambda handler.
+ *
+ * Handles both API Gateway proxy events (admin portal, field-filtered reads,
+ * async write enqueue, job status) and SQS FIFO write events.
+ *
+ * Runtime: Node.js 20.x. No runtime dependencies beyond the AWS SDK v3 that
+ * ships with the Lambda runtime, so it can be embedded as CloudFormation
+ * inline code (ZipFile).
+ */
+
+const { randomUUID, timingSafeEqual } = require("node:crypto");
+
+const DEFAULT_FIELDS = "11,12,14,1109";
+const MAX_FIELDS = 100;
+const TOKEN_SKEW_SECONDS = 300;
+const READ_CACHE_TTL_MS = 30_000;
+const READ_CACHE_MAX_ENTRIES = 500;
+const MAX_ATTEMPTS = 5;
+const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
+const FIELD_ID = /^[A-Za-z0-9._]+$/;
+
+// Per-container read cache. Scoped by persona + loan + field set so tenants
+// can never see another tenant's projection.
+const readCache = new Map();
+
+const log = (level, action, details = {}) =>
+  console.log(JSON.stringify({ timestamp: new Date().toISOString(), level, action, ...details }));
+
+const json = (statusCode, body, headers = {}) => ({
+  statusCode,
+  headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers },
+  body: JSON.stringify(body),
+});
+
+const error = (statusCode, message, extra = {}) => json(statusCode, { error: message, ...extra });
+
+function safeEqual(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function header(event, name) {
+  const headers = event.headers || {};
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()];
+}
+
+function decode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseFields(raw) {
+  const fields = String(raw || DEFAULT_FIELDS)
+    .split(",")
+    .map((field) => field.trim())
+    .filter(Boolean);
+  const unique = [...new Set(fields)];
+  if (unique.length === 0 || unique.length > MAX_FIELDS) return null;
+  if (unique.some((field) => !FIELD_ID.test(field))) return null;
+  return unique;
+}
+
+function validFields(fields) {
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) return false;
+  const keys = Object.keys(fields);
+  if (keys.length === 0 || keys.length > MAX_FIELDS) return false;
+  return keys.every(
+    (key) =>
+      FIELD_ID.test(key) &&
+      (["string", "number", "boolean"].includes(typeof fields[key]) || fields[key] === null),
+  );
+}
+
+function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env, now = () => Date.now() } = {}) {
+  if (!store) throw new Error("createHandler requires a store");
+
+  const baseUrl = () => (env.ENCOMPASS_BASE_URL || "https://api.elliemae.com").replace(/\/+$/, "");
+  const timeoutMs = () => Number(env.UPSTREAM_TIMEOUT_MS) || 8000;
+  let credentials = null;
+
+  async function credentialsForExchange() {
+    if (!credentials) credentials = await store.getSecret();
+    return credentials;
+  }
+
+  async function getScopedToken(encompassUserId) {
+    const nowSeconds = Math.floor(now() / 1000);
+    const cached = await store.getToken(encompassUserId);
+    if (cached && cached.accessToken && cached.expiresAt > nowSeconds + TOKEN_SKEW_SECONDS) {
+      log("INFO", "TOKEN_CACHE_HIT", { encompassUserId });
+      return cached.accessToken;
+    }
+
+    log("INFO", "TOKEN_EXCHANGE_REQUEST", { encompassUserId });
+    const secret = await credentialsForExchange();
+    const body = new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+      client_id: secret.clientId,
+      client_secret: secret.clientSecret,
+      subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      subject_user_id: encompassUserId,
+    });
+
+    const response = await fetchImpl(`${baseUrl()}/oauth2/v1/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: body.toString(),
+      signal: AbortSignal.timeout(timeoutMs()),
+    });
+
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => "")).slice(0, 300);
+      log("ERROR", "TOKEN_EXCHANGE_FAILED", { encompassUserId, status: response.status, detail });
+      throw new Error(`Encompass auth failure: ${response.status}`);
+    }
+
+    const token = await response.json();
+    const expiresAt = nowSeconds + (Number(token.expires_in) || 1800);
+    await store.putToken({ encompassUserId, accessToken: token.access_token, expiresAt, ttl: expiresAt });
+    log("INFO", "TOKEN_EXCHANGE_SUCCESS", { encompassUserId, expiresAt });
+    return token.access_token;
+  }
+
+  async function tenantFor(apiKeyId) {
+    if (!apiKeyId) return null;
+    return (await store.getTenant(apiKeyId)) || null;
+  }
+
+  async function readLoan(event, apiKeyId, loanId) {
+    const tenant = await tenantFor(apiKeyId);
+    if (!tenant) return error(403, "Unauthorized tenant mapping");
+
+    const fields = parseFields(event.queryStringParameters?.fields);
+    if (!fields) return error(400, "Invalid fields parameter");
+
+    const cacheKey = `${tenant.encompassUserId}|${loanId}|${fields.join(",")}`;
+    const cached = readCache.get(cacheKey);
+    if (cached && cached.expiresAt > now()) {
+      log("INFO", "READ_CACHE_HIT", { loanId, fields: fields.length });
+      return json(200, { ...cached.body, _cached: true }, { "Cache-Control": "private, max-age=30" });
+    }
+
+    let token;
+    try {
+      token = await getScopedToken(tenant.encompassUserId);
+    } catch (err) {
+      log("ERROR", "ENCOMPASS_AUTH_UNAVAILABLE", { loanId, message: err.message });
+      return error(502, "Encompass authentication failed");
+    }
+
+    const url = `${baseUrl()}/encompass/v1/loans/${encodeURIComponent(loanId)}` +
+      `?entities=fields&fields=${encodeURIComponent(fields.join(","))}`;
+    const started = now();
+    let response;
+    try {
+      response = await fetchImpl(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs()),
+      });
+    } catch (err) {
+      log("ERROR", "ENCOMPASS_READ_FAILED", { loanId, message: err.message });
+      return error(err.name === "TimeoutError" ? 504 : 502, "Encompass request failed");
+    }
+
+    const durationMs = now() - started;
+    const status = response.status;
+    log("INFO", "ENCOMPASS_READ_COMPLETE", { loanId, status, durationMs, fields: fields.length });
+
+    if (!response.ok) {
+      if (status === 423) return error(423, "Loan is locked by Encompass", { code: "FILE_LOCKED" });
+      if (status === 404) return error(404, "Loan not found");
+      if (status === 429) return error(429, "Encompass rate limit reached");
+      if (status === 401 || status === 403) return error(502, "Encompass rejected gateway credentials");
+      if (status >= 500) return error(502, "Encompass unavailable");
+      return error(400, "Encompass rejected the request", { upstreamStatus: status });
+    }
+
+    let loan;
+    try {
+      loan = await response.json();
+    } catch {
+      return error(502, "Invalid Encompass response");
+    }
+
+    const projected = {};
+    for (const field of fields) {
+      if (loan && loan[field] !== undefined) projected[field] = loan[field];
+    }
+    const body = { id: (loan && loan.id) || loanId, fields: projected, _cached: false };
+    readCache.set(cacheKey, { body, expiresAt: now() + READ_CACHE_TTL_MS });
+    if (readCache.size > READ_CACHE_MAX_ENTRIES) readCache.clear();
+    return json(200, body, { "Cache-Control": "private, max-age=30" });
+  }
+
+  async function enqueueWrite(event, apiKeyId, loanId) {
+    const tenant = await tenantFor(apiKeyId);
+    if (!tenant) return error(403, "Unauthorized tenant mapping");
+
+    let payload;
+    try {
+      payload = JSON.parse(event.body || "");
+    } catch {
+      return error(400, "Invalid JSON body");
+    }
+    if (!validFields(payload && payload.fields)) {
+      return error(400, "Body must contain a non-empty fields object");
+    }
+
+    const createdAt = new Date(now()).toISOString();
+    const jobId = `job_${randomUUID()}`;
+    const job = {
+      jobId,
+      loanId,
+      apiKeyId,
+      encompassUserId: tenant.encompassUserId,
+      status: "PENDING",
+      attempts: 0,
+      error: null,
+      createdAt,
+      updatedAt: createdAt,
+      ttl: Math.floor(now() / 1000) + JOB_TTL_SECONDS,
+    };
+    await store.putJob(job);
+
+    try {
+      await store.enqueueWrite({ jobId, loanId, fields: payload.fields });
+    } catch (err) {
+      await store.putJob({ ...job, status: "FAILED", error: "Queue unavailable", updatedAt: new Date(now()).toISOString() });
+      log("ERROR", "WRITE_ENQUEUE_FAILED", { jobId, loanId, message: err.message });
+      return error(503, "Write queue unavailable");
+    }
+
+    log("INFO", "WRITE_ENQUEUED", { jobId, loanId, apiKeyId, fieldCount: Object.keys(payload.fields).length });
+    return json(202, { status: "ACCEPTED", jobId, loanId, statusUrl: `/v1/jobs/${jobId}` });
+  }
+
+  async function jobStatus(apiKeyId, jobId) {
+    const tenant = await tenantFor(apiKeyId);
+    if (!tenant) return error(403, "Unauthorized tenant mapping");
+    const job = await store.getJob(jobId);
+    if (!job || job.apiKeyId !== apiKeyId) return error(404, "Job not found");
+    return json(200, {
+      jobId: job.jobId,
+      loanId: job.loanId,
+      status: job.status,
+      attempts: job.attempts,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      error: job.error || null,
+    });
+  }
+
+  async function provision(event, requestId) {
+    const expected = env.ADMIN_TOKEN;
+    if (!expected) return error(503, "Admin portal is not configured");
+    if (!safeEqual(header(event, "x-admin-token") || "", expected)) {
+      log("WARN", "PORTAL_AUTH_FAILED", { requestId });
+      return error(403, "Invalid admin token");
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(event.body || "");
+    } catch {
+      return error(400, "Invalid JSON body");
+    }
+
+    const tenantName = String((payload && payload.tenantName) || "").trim();
+    const encompassUserId = String((payload && payload.encompassUserId) || "").trim();
+    if (!tenantName || tenantName.length > 100 || !encompassUserId || encompassUserId.length > 100) {
+      return error(400, "tenantName and encompassUserId are required (max 100 chars)");
+    }
+
+    const key = await store.createApiKey({ tenantName, encompassUserId });
+    await store.putTenant({
+      apiKeyId: key.id,
+      tenantName,
+      encompassUserId,
+      status: "ACTIVE",
+      createdAt: new Date(now()).toISOString(),
+    });
+    log("INFO", "TENANT_PROVISIONED", { tenantName, encompassUserId, apiKeyId: key.id });
+    return json(200, {
+      message: "Tenant provisioned successfully",
+      apiKey: key.value,
+      tenantName,
+      encompassUserId,
+    });
+  }
+
+  async function processWrite(message, attempts) {
+    const { jobId, loanId, fields } = message || {};
+    if (!jobId || !loanId || !validFields(fields)) throw new Error("Malformed write message");
+
+    const job = await store.getJob(jobId);
+    if (!job) {
+      log("WARN", "JOB_NOT_FOUND", { jobId, loanId });
+      return;
+    }
+    if (job.status === "COMPLETED") return;
+
+    const token = await getScopedToken(job.encompassUserId);
+    let response;
+    try {
+      response = await fetchImpl(`${baseUrl()}/encompass/v1/loans/${encodeURIComponent(loanId)}`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(fields),
+        signal: AbortSignal.timeout(timeoutMs()),
+      });
+    } catch (err) {
+      throw new Error(`Encompass write failed: ${err.message}`);
+    }
+
+    const retryable = response.status === 423 || response.status === 429 || response.status >= 500;
+    const updatedAt = new Date(now()).toISOString();
+
+    if (!response.ok && !retryable) {
+      await store.putJob({ ...job, status: "FAILED", attempts, error: `Encompass rejected update (${response.status})`, updatedAt });
+      log("ERROR", "WRITE_REJECTED", { jobId, loanId, status: response.status });
+      return;
+    }
+
+    if (!response.ok) {
+      if (attempts >= MAX_ATTEMPTS) {
+        await store.putJob({ ...job, status: "FAILED", attempts, error: `Encompass still returned ${response.status}`, updatedAt });
+        log("ERROR", "WRITE_ATTEMPTS_EXHAUSTED", { jobId, loanId, status: response.status, attempts });
+        return;
+      }
+      await store.putJob({ ...job, status: "RETRYING", attempts, error: `Encompass responded ${response.status}`, updatedAt });
+      throw new Error(`Retryable Encompass status ${response.status}`);
+    }
+
+    await store.putJob({ ...job, status: "COMPLETED", attempts, error: null, updatedAt });
+    log("INFO", "WRITE_COMPLETED", { jobId, loanId, attempts });
+  }
+
+  async function handleQueue(records) {
+    const batchItemFailures = [];
+    for (const record of records) {
+      const attempts = Number(record.attributes && record.attributes.ApproximateReceiveCount) || 1;
+      let jobId;
+      try {
+        const message = JSON.parse(record.body || "{}");
+        jobId = message.jobId;
+        await processWrite(message, attempts);
+      } catch (err) {
+        log("WARN", "WRITE_RETRY_SCHEDULED", {
+          jobId,
+          messageId: record.messageId,
+          attempts,
+          message: err.message,
+        });
+        batchItemFailures.push({ itemIdentifier: record.messageId });
+      }
+    }
+    return { batchItemFailures };
+  }
+
+  async function handleHttp(event) {
+    const method = String(event.httpMethod || (event.requestContext && event.requestContext.http && event.requestContext.http.method) || "GET").toUpperCase();
+    const path = event.path || event.rawPath || "/";
+    const requestId = event.requestContext && event.requestContext.requestId;
+    const apiKeyId = event.requestContext && event.requestContext.identity && event.requestContext.identity.apiKeyId;
+    const started = now();
+
+    log("INFO", "REQUEST_RECEIVED", { requestId, method, path, apiKeyId });
+    try {
+      if (method === "GET" && path === "/health") return json(200, { status: "ok" });
+
+      if (path === "/portal") {
+        if (method === "GET") return { ...json(200, {}), headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'", "X-Frame-Options": "DENY" }, body: renderPortal() };
+        if (method === "POST") return await provision(event, requestId);
+        return error(405, "Method not allowed");
+      }
+
+      let match;
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)$/))) {
+        const loanId = decode(match[1]);
+        if (method === "GET") return await readLoan(event, apiKeyId, loanId);
+        if (method === "PATCH") return await enqueueWrite(event, apiKeyId, loanId);
+        return error(405, "Method not allowed");
+      }
+      if ((match = path.match(/^\/v1\/jobs\/([^/]+)$/)) && method === "GET") {
+        return await jobStatus(apiKeyId, decode(match[1]));
+      }
+
+      return error(404, "Not found");
+    } catch (err) {
+      log("ERROR", "HANDLER_EXCEPTION", { requestId, method, path, message: err.message, stack: err.stack });
+      return error(500, "Internal gateway error");
+    } finally {
+      log("INFO", "REQUEST_COMPLETE", { requestId, method, path, durationMs: now() - started });
+    }
+  }
+
+  return async function handler(event) {
+    const records = event && event.Records;
+    if (Array.isArray(records) && records.length > 0 && records[0].eventSource === "aws:sqs") {
+      return handleQueue(records);
+    }
+    return handleHttp(event || {});
+  };
+}
+
+function renderPortal() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encompass Gateway Management</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #0f172a; color: #e2e8f0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { width: 100%; max-width: 560px; background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 32px; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+  p.sub { margin: 6px 0 24px; color: #94a3b8; font-size: 13px; }
+  label { display: block; margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; font-weight: 600; }
+  input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #f8fafc; font: inherit; }
+  input:focus { outline: 2px solid #6366f1; outline-offset: 1px; }
+  button { width: 100%; margin-top: 20px; padding: 12px; border: 0; border-radius: 8px; background: #4f46e5; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:hover { background: #6366f1; }
+  button:disabled { opacity: 0.6; cursor: progress; }
+  .hint { margin: 6px 0 0; font-size: 12px; color: #64748b; }
+  .hidden { display: none; }
+  .error { margin-top: 16px; padding: 10px 12px; border-radius: 8px; background: #450a0a; border: 1px solid #7f1d1d; color: #fecaca; font-size: 13px; }
+  .ok { margin-top: 20px; padding: 16px; border-radius: 10px; background: #0f172a; border: 1px solid #065f46; }
+  .ok h2 { margin: 0 0 8px; font-size: 14px; color: #34d399; }
+  .keyrow { display: flex; gap: 8px; margin-bottom: 14px; }
+  .keyrow input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #fde68a; font-size: 13px; }
+  .keyrow button { width: auto; margin: 0; padding: 0 14px; background: #334155; }
+  .keyrow button:hover { background: #475569; }
+  pre { margin: 0; padding: 12px; background: #020617; border-radius: 8px; overflow-x: auto; font-size: 12px; color: #cbd5e1; }
+  a { color: #a5b4fc; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Encompass API Gateway</h1>
+  <p class="sub">Issue a scoped API key mapped to an Encompass persona. Keys inherit that user's access rights.</p>
+  <form id="form">
+    <label for="adminToken">Admin token</label>
+    <input id="adminToken" type="password" autocomplete="off" placeholder="Provided when the stack was deployed">
+    <label for="tenantName">Partner / vendor name</label>
+    <input id="tenantName" type="text" maxlength="100" placeholder="e.g. First American Title">
+    <label for="encompassUserId">Encompass impersonation user ID</label>
+    <input id="encompassUserId" type="text" maxlength="100" placeholder="e.g. api_title_vendor">
+    <p class="hint">Requests made with this key use this Encompass user's persona and permissions.</p>
+    <button id="submit" type="submit">Provision API access</button>
+  </form>
+  <div id="error" class="error hidden" role="alert"></div>
+  <section id="result" class="ok hidden">
+    <h2>Key provisioned successfully</h2>
+    <p class="hint">Copy this key now. It is not stored in plaintext and will not be shown again.</p>
+    <div class="keyrow">
+      <input id="apiKey" readonly>
+      <button id="copy" type="button">Copy</button>
+    </div>
+    <label for="curl">Partner verification cURL</label>
+    <pre id="curl"></pre>
+    <p><a href="#" id="again">Provision another partner</a></p>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const show = (id) => $(id).classList.remove('hidden');
+  const hide = (id) => $(id).classList.add('hidden');
+
+  $('form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    hide('error');
+    const adminToken = $('adminToken').value.trim();
+    const tenantName = $('tenantName').value.trim();
+    const encompassUserId = $('encompassUserId').value.trim();
+    if (!adminToken || !tenantName || !encompassUserId) {
+      $('error').textContent = 'Please fill out all fields.';
+      return show('error');
+    }
+    const button = $('submit');
+    button.disabled = true;
+    button.textContent = 'Provisioning...';
+    try {
+      const res = await fetch(location.pathname, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': adminToken },
+        body: JSON.stringify({ tenantName, encompassUserId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to create key');
+      $('apiKey').value = data.apiKey;
+      $('curl').textContent =
+        'curl -X GET "' + location.origin + '/v1/loans/SOME_LOAN_GUID?fields=11,12,1109" \\\\\\n' +
+        '  -H "x-api-key: ' + data.apiKey + '"';
+      hide('form');
+      show('result');
+    } catch (err) {
+      $('error').textContent = err.message;
+      show('error');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Provision API access';
+    }
+  });
+
+  $('copy').addEventListener('click', async () => {
+    $('apiKey').select();
+    try { await navigator.clipboard.writeText($('apiKey').value); } catch { document.execCommand('copy'); }
+    $('copy').textContent = 'Copied';
+    setTimeout(() => { $('copy').textContent = 'Copy'; }, 1500);
+  });
+
+  $('again').addEventListener('click', (event) => {
+    event.preventDefault();
+    $('tenantName').value = '';
+    $('encompassUserId').value = '';
+    hide('result');
+    hide('error');
+    show('form');
+  });
+</script>
+</body>
+</html>`;
+}
+
+function createAwsStore(env = process.env) {
+  const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+  const { DynamoDBDocumentClient, GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
+  const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+  const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
+  const {
+    APIGatewayClient,
+    CreateApiKeyCommand,
+    CreateUsagePlanKeyCommand,
+    DeleteApiKeyCommand,
+  } = require("@aws-sdk/client-api-gateway");
+
+  const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const sqs = new SQSClient({});
+  const secrets = new SecretsManagerClient({});
+  const apiGateway = new APIGatewayClient({});
+
+  return {
+    async getSecret() {
+      const res = await secrets.send(new GetSecretValueCommand({ SecretId: env.ENCOMPASS_SECRET_ARN }));
+      return { clientId: env.ENCOMPASS_CLIENT_ID, clientSecret: res.SecretString };
+    },
+    async getTenant(apiKeyId) {
+      const res = await ddb.send(new GetCommand({ TableName: env.TENANT_TABLE, Key: { apiKeyId } }));
+      return res.Item || null;
+    },
+    async putTenant(item) {
+      await ddb.send(new PutCommand({ TableName: env.TENANT_TABLE, Item: item }));
+    },
+    async getToken(encompassUserId) {
+      const res = await ddb.send(new GetCommand({ TableName: env.TOKEN_TABLE, Key: { encompassUserId } }));
+      return res.Item || null;
+    },
+    async putToken(item) {
+      await ddb.send(new PutCommand({ TableName: env.TOKEN_TABLE, Item: item }));
+    },
+    async getJob(jobId) {
+      const res = await ddb.send(new GetCommand({ TableName: env.JOB_TABLE, Key: { jobId } }));
+      return res.Item || null;
+    },
+    async putJob(item) {
+      await ddb.send(new PutCommand({ TableName: env.JOB_TABLE, Item: item }));
+    },
+    async enqueueWrite(message) {
+      await sqs.send(new SendMessageCommand({
+        QueueUrl: env.WRITE_QUEUE_URL,
+        MessageBody: JSON.stringify(message),
+        MessageGroupId: message.loanId,
+        MessageDeduplicationId: message.jobId,
+      }));
+    },
+    async createApiKey({ tenantName, encompassUserId }) {
+      const created = await apiGateway.send(new CreateApiKeyCommand({
+        name: `tenant-${tenantName.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}-${randomUUID().slice(0, 8)}`,
+        description: `Encompass gateway key for ${tenantName} mapped to ${encompassUserId}`,
+        enabled: true,
+        generateDistinctId: true,
+      }));
+      try {
+        await apiGateway.send(new CreateUsagePlanKeyCommand({
+          usagePlanId: env.USAGE_PLAN_ID,
+          keyId: created.id,
+          keyType: "API_KEY",
+        }));
+      } catch (err) {
+        await apiGateway.send(new DeleteApiKeyCommand({ apiKey: created.id })).catch(() => {});
+        throw err;
+      }
+      return { id: created.id, value: created.value };
+    },
+  };
+}
+
+let defaultHandler = null;
+
+exports.handler = async (event, context) => {
+  if (!defaultHandler) defaultHandler = createHandler({ store: createAwsStore(process.env) });
+  return defaultHandler(event, context);
+};
+
+exports.createHandler = createHandler;
+exports.createAwsStore = createAwsStore;
+exports.renderPortal = renderPortal;
+exports._resetReadCache = () => readCache.clear();

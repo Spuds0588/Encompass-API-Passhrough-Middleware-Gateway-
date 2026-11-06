@@ -1,0 +1,16 @@
+{
+  "name": "encompass-api-passthrough-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stateless Encompass API passthrough and async write gateway for AWS Lambda",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test test/",
+    "verify": "node scripts/build.js --check && node --test test/",
+    "dev": "node dev/server.js"
+  }
+}
