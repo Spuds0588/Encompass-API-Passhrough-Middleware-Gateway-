@@ -32,24 +32,57 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     assert.equal(health.status, 200);
     assert.deepEqual(health.body, { status: "ok" });
 
+    const landing = await request(`${gateway.url}/portal`);
+    assert.equal(landing.status, 200);
+    assert.match(landing.body, /Invite link required/);
+
+    const inviteUrl = `${gateway.url}/portal?role=title&code=${encodeURIComponent(gateway.invites.title.code)}`;
+    const portalPage = await request(inviteUrl);
+    assert.equal(portalPage.status, 200);
+    assert.match(portalPage.body, /api_title_template/);
+    assert.match(portalPage.body, /646/);
+
     const rejected = await request(`${gateway.url}/portal`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenantName: "Acme", encompassUserId: "persona-1" }),
+      body: JSON.stringify({ tenantName: "Acme", email: "dev@acme.test", role: "title", code: "wrong" }),
     });
     assert.equal(rejected.status, 403);
 
     const provisioned = await request(`${gateway.url}/portal`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-admin-token": gateway.adminToken },
-      body: JSON.stringify({ tenantName: "Acme Title", encompassUserId: "persona-1" }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tenantName: "Acme Title",
+        email: "dev@acme.test",
+        role: "title",
+        code: gateway.invites.title.code,
+      }),
     });
     assert.equal(provisioned.status, 200);
+    assert.equal(provisioned.body.encompassUserId, "api_title_template");
     const apiKey = provisioned.body.apiKey;
     assert.ok(apiKey);
 
     const noKey = await request(`${gateway.url}/v1/loans/loan-1?fields=11,12`);
     assert.equal(noKey.status, 403);
+
+    const fields = await request(`${gateway.url}/v1/fields?ids=11,646,CX.TITLE.STATUS`, {
+      headers: { "x-api-key": apiKey },
+    });
+    assert.equal(fields.status, 200);
+    assert.deepEqual(fields.body, {
+      11: { description: "Subject Property Address", type: "STRING" },
+      646: { description: "Title - Lender Title Insurance", type: "DECIMAL" },
+      "CX.TITLE.STATUS": { description: "Custom Title Milestone Status", type: "STRING" },
+    });
+
+    const fieldsAgain = await request(`${gateway.url}/v1/fields?ids=11,646,CX.TITLE.STATUS`, {
+      headers: { "x-api-key": apiKey },
+    });
+    assert.equal(fieldsAgain.status, 200);
+    assert.equal(fake.state.standardSchemaCalls, 1);
+    assert.equal(fake.state.customSchemaCalls, 1);
 
     const first = await request(`${gateway.url}/v1/loans/loan-1?fields=11,12,1109`, {
       headers: { "x-api-key": apiKey },

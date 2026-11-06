@@ -17,7 +17,7 @@ const sourcePath = path.join(root, "infra", "template.yaml");
 const codePath = path.join(root, "src", "gateway.js");
 const outputPath = path.join(root, "template.yaml");
 const PLACEHOLDER = /^[ \t]*\/\/__GATEWAY_CODE__$/m;
-const INDENT = " ".repeat(10);
+const INDENT = " ".repeat(9);
 const LIMIT_BYTES = 51200;
 
 const code = fs.readFileSync(codePath, "utf8").trimEnd();
@@ -30,9 +30,13 @@ if (!PLACEHOLDER.test(source)) {
   throw new Error(`${sourcePath} is missing the //__GATEWAY_CODE__ placeholder`);
 }
 
+// Deploy copy is compacted (leading indentation and blank lines removed) to
+// stay under CloudFormation's direct-upload limit. The source stays formatted.
 const inlined = code
   .split("\n")
-  .map((line) => (line.length > 0 ? INDENT + line : ""))
+  .map((line) => line.replace(/^[ \t]+/, ""))
+  .filter((line) => line.length > 0)
+  .map((line) => INDENT + line)
   .join("\n");
 
 const rendered = source.replace(PLACEHOLDER, () => inlined);

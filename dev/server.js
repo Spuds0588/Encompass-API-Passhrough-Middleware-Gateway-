@@ -12,7 +12,11 @@ const { createHandler } = require("../src/gateway");
 const { createMemoryStore } = require("./memory-store");
 const { startFakeEncompass } = require("./fake-encompass");
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "local-admin-token-change-me-1234";
+const INVITES = {
+  title: { code: "local-title-invite-0123456789", persona: "api_title_template" },
+  broker: { code: "local-broker-invite-0123456789", persona: "api_broker_template" },
+  appraisal: { code: "local-appraisal-invite-0123456789", persona: "api_appraisal_template" },
+};
 
 async function createDevGateway({ port = 0, fakeEncompass = null } = {}) {
   const encompass = fakeEncompass || (await startFakeEncompass());
@@ -21,7 +25,12 @@ async function createDevGateway({ port = 0, fakeEncompass = null } = {}) {
     store,
     env: {
       ENCOMPASS_BASE_URL: encompass.url,
-      ADMIN_TOKEN,
+      INVITE_TITLE: INVITES.title.code,
+      PERSONA_TITLE: INVITES.title.persona,
+      INVITE_BROKER: INVITES.broker.code,
+      PERSONA_BROKER: INVITES.broker.persona,
+      INVITE_APPRAISAL: INVITES.appraisal.code,
+      PERSONA_APPRAISAL: INVITES.appraisal.persona,
       UPSTREAM_TIMEOUT_MS: "4000",
     },
   });
@@ -93,7 +102,7 @@ async function createDevGateway({ port = 0, fakeEncompass = null } = {}) {
     url: `http://127.0.0.1:${server.address().port}`,
     store,
     encompass,
-    adminToken: ADMIN_TOKEN,
+    invites: INVITES,
     drain,
     close: async () => {
       await new Promise((done) => {
@@ -109,9 +118,11 @@ if (require.main === module) {
   const port = Number(process.env.PORT) || 3000;
   createDevGateway({ port }).then((gateway) => {
     console.log(`Gateway:     ${gateway.url}`);
-    console.log(`Portal:      ${gateway.url}/portal`);
-    console.log(`Admin token: ${gateway.adminToken}`);
+    console.log(`Portal:      ${gateway.url}/portal?role=title&code=${INVITES.title.code}`);
     console.log(`Encompass:   ${gateway.encompass.url} (fake)`);
+    console.log("Title persona:     api_title_template");
+    console.log("Broker persona:    api_broker_template");
+    console.log("Appraisal persona: api_appraisal_template");
     console.log("Press Ctrl+C to stop.");
   });
 }

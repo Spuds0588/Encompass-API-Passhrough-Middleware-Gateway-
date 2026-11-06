@@ -3,8 +3,9 @@
 ## Mission
 
 A lean, stateless Encompass passthrough gateway that runs in the lender's AWS account:
-field-filtered synchronous reads, asynchronous FIFO writes with retries, and a
-self-serve API key portal. It must never store loan data.
+field-filtered synchronous reads, asynchronous FIFO writes with retries, a
+role-scoped self-serve onboarding portal, and field schema discovery. It must
+never store loan data.
 
 Source of truth for scope: `chat-encompass-api-middleware-gatew-google-ai-studio-2026-11-06-1454.md`.
 
@@ -38,7 +39,7 @@ Source of truth for scope: `chat-encompass-api-middleware-gatew-google-ai-studio
 | `template.yaml` | Generated, committed deployable template. Never edit by hand. |
 | `scripts/build.js` | Inlines the handler into the template, enforces the 51,200-byte direct-upload limit, supports `--check`. |
 | `deploy.sh` | One-line AWS CloudShell deployment; fetches the committed template and deploys the stack. |
-| `dev/fake-encompass.js` | Local fake OAuth + loans upstream, including 423 lock simulation. |
+| `dev/fake-encompass.js` | Local fake OAuth + loans + standard/custom field schema upstream, including 423 lock simulation. |
 | `dev/memory-store.js` | In-memory storage/queue adapter for local runs. Never deployed. |
 | `dev/server.js` | Local API Gateway + SQS emulator around the real handler. |
 | `test/*.test.js` | Unit, end-to-end HTTP, and template tests (Node built-in runner). |
@@ -48,7 +49,7 @@ Source of truth for scope: `chat-encompass-api-middleware-gatew-google-ai-studio
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 32 tests: unit, HTTP e2e, template guards
+npm test          # 41 tests: unit, HTTP e2e, template guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -68,6 +69,10 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - API responses are `Cache-Control: no-store` except reads, which use
   `private, max-age=30` (never `public`: responses are tenant-scoped by API key).
 - Reads project only requested fields and cap field lists at 100.
+- `/v1/fields` splits standard (`CX.`/`CUSTnnFV` excluded) and custom IDs, calls
+  `schemas/loan/standardFields` and `settings/loan/customFields`, and normalizes
+  results to `{ id: { description, type } }`. Cache per persona + field set for
+  5 minutes; never cache across personas.
 - Writes return `202` with a job ID; the SQS event source re-drives retryable
   Encompass failures (423/429/5xx) up to 5 attempts, then marks the job FAILED.
 - Tests must not require AWS or Encompass. Use the dev fakes and close every
@@ -75,8 +80,11 @@ npm run dev       # local gateway at :3000 with fake Encompass
 
 ## Security invariants
 
-- Provisioning requires `x-admin-token` matching the `ADMIN_TOKEN` env var
-  (timing-safe compare); fail closed if unset.
+- Provisioning requires a role invite code (`INVITE_TITLE`, `INVITE_BROKER`,
+  `INVITE_APPRAISAL`) and fails closed if the role or code is unset; comparisons
+  are timing-safe. The persona is chosen server-side from `PERSONA_*`; a
+  client-supplied Encompass user ID is ignored. Invite codes are bearer secrets
+  and are never logged.
 - API Gateway API keys are required on `/{proxy+}`; the portal and `/health` are
   the only unauthenticated routes.
 - API key plaintext is returned once by the portal and never stored.
@@ -108,6 +116,10 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - The deployable artifact is verified in CI on `main`
   (`.github/workflows/ci.yml`) and by fetching the raw `template.yaml` from
   GitHub, which is exactly what `deploy.sh` downloads.
-- To verify for real: run `deploy.sh` in AWS CloudShell, open the printed portal
-  URL, provision a key, then `GET /health`, `GET /v1/loans/{id}?fields=...`,
-  `PATCH /v1/loans/{id}`, and poll `GET /v1/jobs/{id}`.
+- `scripts/build.js` compacts only the inlined deploy copy (leading indentation
+  and blank lines) to keep the single-file template under 51,200 bytes. Keep the
+  source formatted; do not hand-edit `template.yaml`.
+- To verify for real: run `deploy.sh` in AWS CloudShell, open one printed role
+  invite link, provision a key, then `GET /health`, `GET /v1/fields?ids=...`,
+  `GET /v1/loans/{id}?fields=...`, `PATCH /v1/loans/{id}`, and poll
+  `GET /v1/jobs/{id}`. Repeat with a mismatched role link to confirm rejection.

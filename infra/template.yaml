@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Encompass API Passthrough & Middleware Gateway: field-filtered read proxy,
-  async FIFO write pipeline with retries, and a self-serve API key portal.
+  async FIFO write pipeline with retries, role-scoped API key portal, and
+  field schema discovery.
 
 Parameters:
   EncompassInstanceId:
@@ -17,11 +18,36 @@ Parameters:
     NoEcho: true
     MinLength: 1
     Description: Encompass OAuth client secret. Stored in Secrets Manager.
-  AdminPortalToken:
+  TitleInviteCode:
     Type: String
     NoEcho: true
     MinLength: 24
-    Description: Shared secret required to provision API keys from the admin portal.
+    Description: Invite code for title/settlement partners (role=title).
+  BrokerInviteCode:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for TPO/broker partners (role=broker).
+  AppraisalInviteCode:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Invite code for AMC/appraisal partners (role=appraisal).
+  TitleServiceUserId:
+    Type: String
+    Default: api_title_template
+    MinLength: 1
+    Description: Encompass service account impersonated by title invite links.
+  BrokerServiceUserId:
+    Type: String
+    Default: api_broker_template
+    MinLength: 1
+    Description: Encompass service account impersonated by broker invite links.
+  AppraisalServiceUserId:
+    Type: String
+    Default: api_appraisal_template
+    MinLength: 1
+    Description: Encompass service account impersonated by appraisal invite links.
   EncompassBaseUrl:
     Type: String
     Default: https://api.elliemae.com
@@ -180,7 +206,12 @@ Resources:
           ENCOMPASS_CLIENT_ID: !Ref EncompassClientId
           ENCOMPASS_INSTANCE_ID: !Ref EncompassInstanceId
           ENCOMPASS_SECRET_ARN: !Ref EncompassSecret
-          ADMIN_TOKEN: !Ref AdminPortalToken
+          INVITE_TITLE: !Ref TitleInviteCode
+          INVITE_BROKER: !Ref BrokerInviteCode
+          INVITE_APPRAISAL: !Ref AppraisalInviteCode
+          PERSONA_TITLE: !Ref TitleServiceUserId
+          PERSONA_BROKER: !Ref BrokerServiceUserId
+          PERSONA_APPRAISAL: !Ref AppraisalServiceUserId
       Code:
         ZipFile: |
           //__GATEWAY_CODE__
@@ -326,6 +357,9 @@ Outputs:
   HealthUrl:
     Description: Unauthenticated health check.
     Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/health"
+  FieldsUrl:
+    Description: Field schema discovery endpoint.
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/fields"
   WriteQueueUrl:
     Description: FIFO queue that buffers Encompass writes.
     Value: !Ref WriteQueue

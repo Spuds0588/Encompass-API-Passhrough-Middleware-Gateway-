@@ -47,11 +47,27 @@ test("vendor routes require an API key", () => {
   assert.ok(!template.slice(template.indexOf("PortalGet:"), template.indexOf("ProxyAny:")).includes("ApiKeyRequired"));
 });
 
-test("secrets have no default values", () => {
+test("secrets have no default values and invite codes are per role", () => {
   const secretParams = template.slice(template.indexOf("Parameters:"), template.indexOf("Resources:"));
   assert.match(secretParams, /EncompassClientSecret:[\s\S]*?NoEcho: true/);
-  assert.match(secretParams, /AdminPortalToken:[\s\S]*?MinLength: 24/);
+  for (const name of ["TitleInviteCode", "BrokerInviteCode", "AppraisalInviteCode"]) {
+    assert.match(secretParams, new RegExp(`${name}:[\\s\\S]*?NoEcho: true[\\s\\S]*?MinLength: 24`));
+  }
+  assert.ok(!secretParams.includes("AdminPortalToken"));
   assert.ok(!secretParams.includes("ClientSecret:\n    Type: String\n    Default"));
+});
+
+test("portal provisioning is role-scoped and has no admin token", () => {
+  assert.match(template, /INVITE_TITLE/);
+  assert.match(template, /PERSONA_BROKER/);
+  assert.match(template, /PORTAL_INVITE_REJECTED/);
+  assert.ok(!template.includes("ADMIN_TOKEN"));
+  assert.ok(!template.includes("AdminPortalToken"));
+});
+
+test("field schema proxy uses native Encompass endpoints", () => {
+  assert.match(template, /schemas\/loan\/standardFields/);
+  assert.match(template, /settings\/loan\/customFields/);
 });
 
 test("write pipeline is FIFO with retries and a dead-letter queue", () => {
@@ -70,4 +86,6 @@ test("deploy.sh is executable and points at this repository's template", () => {
   assert.match(deploy, /Spuds0588\/Encompass-API-Passhrough-Middleware-Gateway-\/main\/template\.yaml/);
   assert.match(deploy, /aws cloudformation deploy/);
   assert.match(deploy, /--capabilities CAPABILITY_IAM/);
+  assert.match(deploy, /TitleInviteCode="\$TITLE_INVITE_CODE"/);
+  assert.match(deploy, /\?role=title&code=\$\{TITLE_INVITE_CODE\}/);
 });

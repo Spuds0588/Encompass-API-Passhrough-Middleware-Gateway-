@@ -6,7 +6,11 @@ const { createHandler, _resetReadCache } = require("../src/gateway");
 const { createMemoryStore } = require("../dev/memory-store");
 const { startFakeEncompass } = require("../dev/fake-encompass");
 
-const ADMIN_TOKEN = "test-admin-token-0123456789";
+const INVITES = {
+  title: "title-invite-0123456789abcdef",
+  broker: "broker-invite-0123456789abcdef",
+  appraisal: "appraisal-invite-0123456789abcdef",
+};
 
 let fake;
 let store;
@@ -37,6 +41,21 @@ const queueEvent = (message, attempts = 1) => ({
 const enqueue = (loanId = "loan-1", fields = { 1109: 500000 }) =>
   handler(httpEvent({ method: "PATCH", path: `/v1/loans/${loanId}`, body: { fields } }));
 
+const provision = (overrides = {}) =>
+  handler(
+    httpEvent({
+      method: "POST",
+      path: "/portal",
+      body: {
+        tenantName: "Acme Title",
+        email: "dev@acme.test",
+        role: "title",
+        code: INVITES.title,
+        ...overrides,
+      },
+    }),
+  );
+
 beforeEach(async () => {
   fake = await startFakeEncompass({
     loans: {
@@ -48,12 +67,23 @@ beforeEach(async () => {
   _resetReadCache();
   handler = createHandler({
     store,
-    env: { ENCOMPASS_BASE_URL: fake.url, ADMIN_TOKEN, UPSTREAM_TIMEOUT_MS: "3000" },
+    env: {
+      ENCOMPASS_BASE_URL: fake.url,
+      INVITE_TITLE: INVITES.title,
+      PERSONA_TITLE: "api_title_template",
+      INVITE_BROKER: INVITES.broker,
+      PERSONA_BROKER: "api_broker_template",
+      INVITE_APPRAISAL: INVITES.appraisal,
+      PERSONA_APPRAISAL: "api_appraisal_template",
+      UPSTREAM_TIMEOUT_MS: "3000",
+    },
   });
   await store.putTenant({
     apiKeyId: "key-1",
     tenantName: "Acme Title",
     encompassUserId: "persona-1",
+    role: "title",
+    email: "dev@acme.test",
     status: "ACTIVE",
   });
 });
@@ -124,6 +154,49 @@ test("rejects malformed field lists", async () => {
 
 test("propagates loan not found", async () => {
   const response = await handler(httpEvent({ path: "/v1/loans/missing" }));
+  assert.equal(response.statusCode, 404);
+});
+
+test("GET /v1/fields resolves standard and custom definitions", async () => {
+  const response = await handler(httpEvent({ path: "/v1/fields", query: { ids: "11,646,CX.TITLE.STATUS" } }));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(parse(response), {
+    11: { description: "Subject Property Address", type: "STRING" },
+    646: { description: "Title - Lender Title Insurance", type: "DECIMAL" },
+    "CX.TITLE.STATUS": { description: "Custom Title Milestone Status", type: "STRING" },
+  });
+  assert.equal(fake.state.standardSchemaCalls, 1);
+  assert.equal(fake.state.customSchemaCalls, 1);
+});
+
+test("field definitions are cached per persona and field set", async () => {
+  await handler(httpEvent({ path: "/v1/fields", query: { ids: "11,646" } }));
+  const response = await handler(httpEvent({ path: "/v1/fields", query: { ids: "11,646" } }));
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(fake.state.standardSchemaCalls, 1);
+  assert.equal(fake.state.customSchemaCalls, 0);
+});
+
+test("field schema requires valid ids", async () => {
+  assert.equal((await handler(httpEvent({ path: "/v1/fields" }))).statusCode, 400);
+  assert.equal((await handler(httpEvent({ path: "/v1/fields", query: { ids: "11;DROP" } }))).statusCode, 400);
+
+  const tooMany = Array.from({ length: 101 }, (_, index) => String(index + 1)).join(",");
+  assert.equal((await handler(httpEvent({ path: "/v1/fields", query: { ids: tooMany } }))).statusCode, 400);
+});
+
+test("field schema is tenant-scoped and maps upstream failures", async () => {
+  const unknown = await handler(httpEvent({ path: "/v1/fields", query: { ids: "11" }, apiKeyId: "key-unknown" }));
+  assert.equal(unknown.statusCode, 403);
+
+  fake.state.schemaFailure = 500;
+  const failed = await handler(httpEvent({ path: "/v1/fields", query: { ids: "11" } }));
+  assert.equal(failed.statusCode, 502);
+});
+
+test("field schema returns 404 when nothing matches", async () => {
+  const response = await handler(httpEvent({ path: "/v1/fields", query: { ids: "999999" } }));
   assert.equal(response.statusCode, 404);
 });
 
@@ -235,68 +308,77 @@ test("job status is scoped to the requesting tenant", async () => {
   assert.equal(unknown.statusCode, 404);
 });
 
-test("portal rejects a missing or wrong admin token", async () => {
-  const body = { tenantName: "Acme", encompassUserId: "persona-9" };
-
-  const missing = await handler(httpEvent({ method: "POST", path: "/portal", body }));
-  assert.equal(missing.statusCode, 403);
-
-  const wrong = await handler(
-    httpEvent({ method: "POST", path: "/portal", body, headers: { "x-admin-token": "wrong-token-wrong-token" } }),
-  );
-  assert.equal(wrong.statusCode, 403);
+test("portal landing requires an invite link and publishes the field cheat sheet", async () => {
+  const response = await handler(httpEvent({ path: "/portal" }));
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /Invite link required/);
+  assert.match(response.body, /646/);
+  assert.match(response.body, /CX\.YOUR\.FIELD/);
+  assert.doesNotMatch(response.body, /admin token/i);
 });
 
-test("portal provisions a key and maps the tenant", async () => {
-  const response = await handler(
-    httpEvent({
-      method: "POST",
-      path: "/portal",
-      body: { tenantName: "Acme Title", encompassUserId: "persona-9" },
-      headers: { "x-admin-token": ADMIN_TOKEN },
-    }),
-  );
+test("portal renders a persona-locked form for a valid invite", async () => {
+  const response = await handler(httpEvent({ path: "/portal", query: { role: "title", code: INVITES.title } }));
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /Title \/ Settlement/);
+  assert.match(response.body, /api_title_template/);
+  assert.match(response.body, /id="email"/);
+});
+
+test("portal rejects invalid and role-mismatched invites", async () => {
+  const badCode = await handler(httpEvent({ path: "/portal", query: { role: "title", code: "nope" } }));
+  assert.equal(badCode.statusCode, 403);
+  assert.match(badCode.body, /invalid or has expired/i);
+
+  const mismatch = await provision({ role: "broker", code: INVITES.title });
+  assert.equal(mismatch.statusCode, 403);
+});
+
+test("portal provisions a persona-locked key via an invite", async () => {
+  const response = await provision();
   assert.equal(response.statusCode, 200);
 
   const body = parse(response);
-  assert.equal(body.tenantName, "Acme Title");
-  assert.equal(body.encompassUserId, "persona-9");
+  assert.equal(body.role, "title");
+  assert.equal(body.encompassUserId, "api_title_template");
   assert.ok(body.apiKey);
 
   const apiKeyId = store.keyIdsByValue.get(body.apiKey);
   assert.ok(apiKeyId);
+  const tenant = await store.getTenant(apiKeyId);
+  assert.equal(tenant.email, "dev@acme.test");
+  assert.equal(tenant.role, "title");
+  assert.equal(tenant.encompassUserId, "api_title_template");
 
   const read = await handler(httpEvent({ path: "/v1/loans/loan-1", apiKeyId }));
   assert.equal(read.statusCode, 200);
 });
 
-test("portal validates required fields", async () => {
-  const response = await handler(
-    httpEvent({
-      method: "POST",
-      path: "/portal",
-      body: { tenantName: "", encompassUserId: "" },
-      headers: { "x-admin-token": ADMIN_TOKEN },
-    }),
-  );
-  assert.equal(response.statusCode, 400);
+test("portal validates company name and email", async () => {
+  for (const overrides of [
+    { tenantName: "" },
+    { email: "not-an-email" },
+    { email: "" },
+  ]) {
+    const response = await provision(overrides);
+    assert.equal(response.statusCode, 400);
+  }
 });
 
-test("portal fails closed when no admin token is configured", async () => {
+test("portal fails closed when the role is not configured", async () => {
   const unconfigured = createHandler({ store, env: { ENCOMPASS_BASE_URL: fake.url } });
   const response = await unconfigured(
     httpEvent({
       method: "POST",
       path: "/portal",
-      body: { tenantName: "Acme", encompassUserId: "persona-9" },
-      headers: { "x-admin-token": ADMIN_TOKEN },
+      body: { tenantName: "Acme", email: "dev@acme.test", role: "title", code: INVITES.title },
     }),
   );
-  assert.equal(response.statusCode, 503);
+  assert.equal(response.statusCode, 403);
 });
 
 test("portal serves hardened HTML", async () => {
-  const response = await handler(httpEvent({ path: "/portal" }));
+  const response = await handler(httpEvent({ path: "/portal", query: { role: "title", code: INVITES.title } }));
   assert.equal(response.statusCode, 200);
   assert.match(response.headers["Content-Type"], /text\/html/);
   assert.match(response.headers["Content-Security-Policy"], /frame-ancestors 'none'/);
@@ -307,4 +389,5 @@ test("unknown routes return 404 and wrong methods return 405", async () => {
   assert.equal((await handler(httpEvent({ path: "/nope" }))).statusCode, 404);
   assert.equal((await handler(httpEvent({ method: "POST", path: "/v1/loans/loan-1" }))).statusCode, 405);
   assert.equal((await handler(httpEvent({ method: "PUT", path: "/portal" }))).statusCode, 405);
+  assert.equal((await handler(httpEvent({ method: "POST", path: "/v1/fields" }))).statusCode, 405);
 });

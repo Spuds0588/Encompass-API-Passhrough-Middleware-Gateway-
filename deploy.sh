@@ -8,7 +8,9 @@
 #
 # Optional environment overrides:
 #   STACK_NAME, AWS_REGION, ENCOMPASS_INSTANCE, ENCOMPASS_CLIENT_ID,
-#   ENCOMPASS_CLIENT_SECRET, ADMIN_TOKEN, TEMPLATE_URL
+#   ENCOMPASS_CLIENT_SECRET, TITLE_INVITE_CODE, BROKER_INVITE_CODE,
+#   APPRAISAL_INVITE_CODE, TITLE_PERSONA, BROKER_PERSONA, APPRAISAL_PERSONA,
+#   TEMPLATE_URL
 
 set -euo pipefail
 
@@ -29,6 +31,7 @@ say "${BLUE}====================================================${NC}"
 
 command -v aws >/dev/null 2>&1 || { say "${RED}[ERROR] AWS CLI not found. Run this in AWS CloudShell.${NC}"; exit 1; }
 command -v curl >/dev/null 2>&1 || { say "${RED}[ERROR] curl not found.${NC}"; exit 1; }
+command -v openssl >/dev/null 2>&1 || { say "${RED}[ERROR] openssl not found; set invite codes manually.${NC}"; exit 1; }
 
 say "\n${YELLOW}[1/4] Verifying AWS credentials...${NC}"
 CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null || true)"
@@ -42,7 +45,6 @@ say "\n${YELLOW}[2/4] Encompass API configuration...${NC}"
 ENCOMPASS_INSTANCE="${ENCOMPASS_INSTANCE:-}"
 ENCOMPASS_CLIENT_ID="${ENCOMPASS_CLIENT_ID:-}"
 ENCOMPASS_CLIENT_SECRET="${ENCOMPASS_CLIENT_SECRET:-}"
-ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 
 [ -n "$ENCOMPASS_INSTANCE" ] || read -rp "Encompass instance ID (e.g. BE11122233): " ENCOMPASS_INSTANCE
 [ -n "$ENCOMPASS_CLIENT_ID" ] || read -rp "Encompass API client ID: " ENCOMPASS_CLIENT_ID
@@ -56,11 +58,15 @@ if [ -z "$ENCOMPASS_INSTANCE" ] || [ -z "$ENCOMPASS_CLIENT_ID" ] || [ -z "$ENCOM
   exit 1
 fi
 
-if [ -z "$ADMIN_TOKEN" ]; then
-  ADMIN_TOKEN="$(openssl rand -hex 24)"
-  say "${YELLOW}Generated an admin portal token. Save it now; it is required to create API keys:${NC}"
-  say "${GREEN}${ADMIN_TOKEN}${NC}"
-fi
+# Role-scoped invite codes. A vendor with one code cannot mint keys for another role.
+TITLE_INVITE_CODE="${TITLE_INVITE_CODE:-$(openssl rand -hex 24)}"
+BROKER_INVITE_CODE="${BROKER_INVITE_CODE:-$(openssl rand -hex 24)}"
+APPRAISAL_INVITE_CODE="${APPRAISAL_INVITE_CODE:-$(openssl rand -hex 24)}"
+TITLE_PERSONA="${TITLE_PERSONA:-api_title_template}"
+BROKER_PERSONA="${BROKER_PERSONA:-api_broker_template}"
+APPRAISAL_PERSONA="${APPRAISAL_PERSONA:-api_appraisal_template}"
+
+say "${GREEN}Role invite codes are ready (printed with links after deployment).${NC}"
 
 say "\n${YELLOW}[3/4] Fetching latest template...${NC}"
 TMP_TEMPLATE="$(mktemp "${TMPDIR:-/tmp}/encompass-gateway-XXXXXX.yaml")"
@@ -96,7 +102,12 @@ aws cloudformation deploy \
     EncompassInstanceId="$ENCOMPASS_INSTANCE" \
     EncompassClientId="$ENCOMPASS_CLIENT_ID" \
     EncompassClientSecret="$ENCOMPASS_CLIENT_SECRET" \
-    AdminPortalToken="$ADMIN_TOKEN"
+    TitleInviteCode="$TITLE_INVITE_CODE" \
+    BrokerInviteCode="$BROKER_INVITE_CODE" \
+    AppraisalInviteCode="$APPRAISAL_INVITE_CODE" \
+    TitleServiceUserId="$TITLE_PERSONA" \
+    BrokerServiceUserId="$BROKER_PERSONA" \
+    AppraisalServiceUserId="$APPRAISAL_PERSONA"
 
 say "\n${GREEN}====================================================${NC}"
 say "${GREEN}             DEPLOYMENT SUCCESSFUL                  ${NC}"
@@ -114,7 +125,9 @@ PORTAL_URL="$(aws cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='AdminPortalUrl'].OutputValue" \
   --output text)"
 
-say "\n${YELLOW}Admin portal:${NC} ${GREEN}${PORTAL_URL}${NC}"
-say "${YELLOW}Admin token:${NC}  ${GREEN}${ADMIN_TOKEN}${NC}"
-say "${YELLOW}Next:${NC} open the portal, enter the admin token, and provision your first vendor key."
-say "${RED}Do not commit the admin token. For stack updates, reuse the same token.${NC}"
+say "\n${YELLOW}Portal:${NC} ${GREEN}${PORTAL_URL}${NC}"
+say "${YELLOW}Title invite:${NC}     ${GREEN}${PORTAL_URL}?role=title&code=${TITLE_INVITE_CODE}${NC}"
+say "${YELLOW}Broker invite:${NC}    ${GREEN}${PORTAL_URL}?role=broker&code=${BROKER_INVITE_CODE}${NC}"
+say "${YELLOW}Appraisal invite:${NC} ${GREEN}${PORTAL_URL}?role=appraisal&code=${APPRAISAL_INVITE_CODE}${NC}"
+say "${YELLOW}Personas:${NC} title=${TITLE_PERSONA} broker=${BROKER_PERSONA} appraisal=${APPRAISAL_PERSONA}"
+say "${RED}These links are bearer secrets. Share each role's link only with that role's partners, and reuse the same codes on stack updates.${NC}"

@@ -10,7 +10,7 @@
   "scripts": {
     "build": "node scripts/build.js",
     "test": "node --test",
-    "verify": "node scripts/build.js --check && node --test test/",
+    "verify": "node scripts/build.js --check && node --test",
     "dev": "node dev/server.js"
   }
 }

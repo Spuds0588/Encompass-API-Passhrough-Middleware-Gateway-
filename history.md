@@ -96,3 +96,54 @@ a new dated entry.
   or CLI and no Encompass access.
 - Cleanup at task close: removed the throwaway `/tmp` cfn-lint install, raw artifact
   copies, and test logs; no npm dependencies installed; no background servers left.
+
+## 2026-11-06 — Role-scoped invites and field schema discovery
+
+- The user supplied the full onboarding notes, superseding the earlier admin-token
+  interpretation. The portal must not let an unauthenticated visitor choose a
+  persona; onboarding must take the Encompass admin out of the loop.
+- Replaced the shared admin token with three role-scoped invite codes:
+  `INVITE_TITLE`, `INVITE_BROKER`, `INVITE_APPRAISAL`. Each link also carries a
+  role; the server maps it to `PERSONA_TITLE`, `PERSONA_BROKER`, or
+  `PERSONA_APPRAISAL`. The vendor sends only company name and developer email.
+  Any client-supplied Encompass user ID is ignored; role/code mismatch is 403 and
+  an unconfigured role fails closed. Comparisons remain timing-safe and codes are
+  never logged.
+- Added the dynamic field schema route `GET /v1/fields?ids=...` for standard and
+  custom fields. Researched the native APIs first: the notes' path
+  `/encompass/v3/schemas/loan/fields` is not the schema endpoint. The handler uses
+  `/encompass/v3/schemas/loan/standardFields` for standard IDs and
+  `/encompass/v3/settings/loan/customFields` for `CX.*` / `CUSTnnFV` IDs, both with
+  `start=0&limit=10000&ids=...`, then normalizes the array response to
+  `{ id: { description, type } }`. Results cache per persona + field set for five
+  minutes, capped at 200 entries.
+- Rebuilt the portal as an invite page: locked role badge/persona, company + email
+  form, result panel with key, endpoint list, and cURL examples, plus the 11-field
+  cheat sheet and a copy-all-IDs button. Without an invite it shows a landing
+  message and the cheat sheet only. No admin token input remains.
+- Added the three invite codes and three persona parameters to `infra/template.yaml`
+  (all codes `NoEcho`, `MinLength: 24`), removed `AdminPortalToken`/`ADMIN_TOKEN`,
+  and added a `FieldsUrl` output. `deploy.sh` now generates 24-byte (48 hex chars)
+  codes with `openssl`, prints one link per role, and reuses codes/personas from
+  the environment on updates.
+- Extended the fake Encompass with standard/custom schema endpoints, schema call
+  counters, and a configurable schema failure. The dev server now prints the title
+  invite link and exports all three invites. The e2e flow covers landing page,
+  valid invite, rejected code, provisioned persona, fields lookup/cache, read,
+  write, retry, and job status.
+- Template size grew to 53,958 bytes, over CloudFormation's 51,200-byte
+  direct-upload cap. Instead of dropping features or moving to S3 packaging,
+  `scripts/build.js` now compacts only the inlined deploy copy (strips leading
+  indentation/blank lines, uses 9-space YAML content indent). Source remains
+  formatted and readable; the deployed handler is verified separately from the
+  extracted template block. Final template: 49,922 bytes (31,689-byte embedded
+  handler).
+- Evidence:
+  - `npm run verify`: 41/41 tests pass, template in sync.
+  - `cfn-lint template.yaml`: exit 0, no findings.
+  - Extracted inlined handler: `node --check` passes; a portal smoke call against
+    the extracted handler returns 200 with the locked persona and cheat sheet.
+  - `node scripts/build.js`: 49,922 bytes, under the 51,200-byte limit.
+- Pending at this entry: commit, push, new CI run, and raw artifact verification.
+  Still BLOCKED: real AWS deployment, API Gateway key creation, real Encompass
+  OAuth/loans, and the live schema response shape.

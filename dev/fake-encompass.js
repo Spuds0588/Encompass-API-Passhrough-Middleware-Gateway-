@@ -2,11 +2,27 @@
 
 /**
  * Fake Encompass API for local development and tests.
- * Speaks just enough of the OAuth token-exchange + loans endpoints that the
+ * Speaks just enough of the OAuth, loan, and field-schema endpoints that the
  * gateway exercises.
  */
 
 const http = require("node:http");
+
+const FIELD_DEFINITIONS = {
+  11: { description: "Subject Property Address", format: "STRING" },
+  12: { description: "Subject Property City", format: "STRING" },
+  14: { description: "Subject Property State", format: "STRING" },
+  15: { description: "Subject Property Zip", format: "STRING" },
+  3: { description: "Interest Rate", format: "DECIMAL" },
+  763: { description: "Estimated Closing Date", format: "DATE" },
+  1109: { description: "Loan Amount", format: "DECIMAL" },
+  1393: { description: "Active Milestone", format: "STRING" },
+  646: { description: "Title - Lender Title Insurance", format: "DECIMAL" },
+  647: { description: "Title - Owner's Title Insurance", format: "DECIMAL" },
+  648: { description: "Settlement / Escrow Fee", format: "DECIMAL" },
+  "CX.TITLE.STATUS": { description: "Custom Title Milestone Status", format: "STRING" },
+  "CX.TITLE.FEE": { description: "Custom Title Fee", format: "DECIMAL" },
+};
 
 const DEFAULT_LOAN = {
   id: "loan-1",
@@ -17,6 +33,8 @@ const DEFAULT_LOAN = {
   "CX.TITLE.STATUS": "Received",
   "CX.TITLE.FEE": 1250,
 };
+
+const isCustomField = (id) => id.startsWith("CX.") || /^CUST\d{2}FV$/.test(id);
 
 const readBody = (req) =>
   new Promise((resolve) => {
@@ -32,6 +50,9 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
     tokenExchanges: 0,
     reads: 0,
     writes: 0,
+    standardSchemaCalls: 0,
+    customSchemaCalls: 0,
+    schemaFailure: 0,
     tokens: new Set(),
     loans: new Map(Object.entries(loans).map(([id, loan]) => [id, { ...loan, id }])),
     lockRemaining: new Map(Object.entries(lockAttempts)),
@@ -44,6 +65,13 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
   };
 
   const authorized = (req) => state.tokens.has(String(req.headers.authorization || "").replace(/^Bearer /, ""));
+
+  const schemaEntries = (url, custom) => {
+    const ids = String(url.searchParams.get("ids") || "").split(",").filter(Boolean);
+    return ids
+      .filter((id) => isCustomField(id) === custom && FIELD_DEFINITIONS[id])
+      .map((id) => ({ id, ...FIELD_DEFINITIONS[id] }));
+  };
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -62,6 +90,18 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
     }
 
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
+
+    if (req.method === "GET" && url.pathname === "/encompass/v3/schemas/loan/standardFields") {
+      state.standardSchemaCalls += 1;
+      if (state.schemaFailure) return send(res, state.schemaFailure, { error: "schema_unavailable" });
+      return send(res, 200, schemaEntries(url, false));
+    }
+
+    if (req.method === "GET" && url.pathname === "/encompass/v3/settings/loan/customFields") {
+      state.customSchemaCalls += 1;
+      if (state.schemaFailure) return send(res, state.schemaFailure, { error: "schema_unavailable" });
+      return send(res, 200, schemaEntries(url, true));
+    }
 
     const match = url.pathname.match(/^\/encompass\/v1\/loans\/([^/]+)$/);
     if (!match) return send(res, 404, { error: "not_found" });
@@ -110,4 +150,4 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
   });
 }
 
-module.exports = { startFakeEncompass, DEFAULT_LOAN };
+module.exports = { startFakeEncompass, DEFAULT_LOAN, FIELD_DEFINITIONS };

@@ -21,10 +21,37 @@ const READ_CACHE_MAX_ENTRIES = 500;
 const MAX_ATTEMPTS = 5;
 const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
 const FIELD_ID = /^[A-Za-z0-9._]+$/;
+const SCHEMA_CACHE_TTL_MS = 5 * 60_000;
+const SCHEMA_CACHE_MAX_ENTRIES = 200;
+const STANDARD_FIELDS_PATH = "/encompass/v3/schemas/loan/standardFields";
+const CUSTOM_FIELDS_PATH = "/encompass/v3/settings/loan/customFields";
 
-// Per-container read cache. Scoped by persona + loan + field set so tenants
-// can never see another tenant's projection.
+const ROLE_CONFIG = {
+  title: { label: "Title / Settlement", codeEnv: "INVITE_TITLE", personaEnv: "PERSONA_TITLE" },
+  broker: { label: "TPO / Broker", codeEnv: "INVITE_BROKER", personaEnv: "PERSONA_BROKER" },
+  appraisal: { label: "AMC / Appraisal", codeEnv: "INVITE_APPRAISAL", personaEnv: "PERSONA_APPRAISAL" },
+};
+
+// Curated cheat sheet for the portal. The dynamic schema route is the source
+// of truth for everything else, including CX.* custom fields.
+const FIELD_CATALOG = [
+  { category: "Property", name: "Street Address", id: "11", type: "STRING", sample: '"123 Main St"' },
+  { category: "Property", name: "City", id: "12", type: "STRING", sample: '"Irvine"' },
+  { category: "Property", name: "State", id: "14", type: "STRING", sample: '"CA"' },
+  { category: "Property", name: "Zip", id: "15", type: "STRING", sample: '"92618"' },
+  { category: "Loan Terms", name: "Loan Amount", id: "1109", type: "DECIMAL", sample: "450000.00" },
+  { category: "Loan Terms", name: "Interest Rate", id: "3", type: "DECIMAL", sample: "6.875" },
+  { category: "Milestones", name: "Estimated Closing Date", id: "763", type: "DATE", sample: '"11/20/2026"' },
+  { category: "Milestones", name: "Active Milestone", id: "1393", type: "STRING", sample: '"Underwriting"' },
+  { category: "Title Fees", name: "Lender's Title Insurance", id: "646", type: "DECIMAL", sample: "1250.00" },
+  { category: "Title Fees", name: "Owner's Title Insurance", id: "647", type: "DECIMAL", sample: "450.00" },
+  { category: "Title Fees", name: "Settlement / Escrow Fee", id: "648", type: "DECIMAL", sample: "600.00" },
+];
+
+// Per-container caches. Scoped by persona so tenants can never see another
+// tenant's projection or schema results.
 const readCache = new Map();
+const fieldCache = new Map();
 
 const log = (level, action, details = {}) =>
   console.log(JSON.stringify({ timestamp: new Date().toISOString(), level, action, ...details }));
@@ -77,6 +104,58 @@ function validFields(fields) {
       (["string", "number", "boolean"].includes(typeof fields[key]) || fields[key] === null),
   );
 }
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[char]);
+}
+
+function parseIds(raw) {
+  if (!raw) return null;
+  const ids = String(raw).split(",").map((id) => id.trim()).filter(Boolean);
+  const unique = [...new Set(ids)];
+  if (unique.length === 0 || unique.length > MAX_FIELDS) return null;
+  if (unique.some((id) => !FIELD_ID.test(id))) return null;
+  return unique;
+}
+
+const isCustomField = (id) => id.startsWith("CX.") || /^CUST\d{2}FV$/.test(id);
+
+function collectDefinitions(entries, requested, target) {
+  const wanted = new Set(requested);
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const id = String(entry.id ?? entry.fieldId ?? entry.fieldName ?? "");
+    if (!wanted.has(id)) continue;
+    target[id] = {
+      description: String(entry.description || ""),
+      type: String(entry.format || entry.dataType || entry.type || "STRING").toUpperCase(),
+    };
+  }
+}
+
+function roleFor(env, role) {
+  const config = ROLE_CONFIG[role];
+  if (!config) return null;
+  const code = env[config.codeEnv];
+  const persona = env[config.personaEnv];
+  return code && persona ? { role, label: config.label, code, persona } : null;
+}
+
+const html = (statusCode, body) => ({
+  statusCode,
+  headers: {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+  },
+  body,
+});
 
 function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env, now = () => Date.now() } = {}) {
   if (!store) throw new Error("createHandler requires a store");
@@ -131,6 +210,66 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
   async function tenantFor(apiKeyId) {
     if (!apiKeyId) return null;
     return (await store.getTenant(apiKeyId)) || null;
+  }
+
+  async function fetchSchema(path, ids, token) {
+    const url = `${baseUrl()}${path}?start=0&limit=10000&ids=${encodeURIComponent(ids.join(","))}`;
+    const response = await fetchImpl(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs()),
+    });
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => "")).slice(0, 200);
+      throw new Error(`${path} returned ${response.status}: ${detail}`);
+    }
+    const body = await response.json();
+    return Array.isArray(body) ? body : Array.isArray(body && body.fields) ? body.fields : [];
+  }
+
+  async function fieldDefinitions(event, apiKeyId) {
+    const tenant = await tenantFor(apiKeyId);
+    if (!tenant) return error(403, "Unauthorized tenant mapping");
+
+    const ids = parseIds(event.queryStringParameters?.ids);
+    if (!ids) return error(400, "ids is required (comma-separated, max 100)");
+
+    const cacheKey = `${tenant.encompassUserId}|${ids.join(",")}`;
+    const cached = fieldCache.get(cacheKey);
+    if (cached && cached.expiresAt > now()) {
+      log("INFO", "FIELD_SCHEMA_CACHE_HIT", { count: ids.length });
+      return json(200, cached.body, { "Cache-Control": "private, max-age=300" });
+    }
+
+    let token;
+    try {
+      token = await getScopedToken(tenant.encompassUserId);
+    } catch (err) {
+      log("ERROR", "ENCOMPASS_AUTH_UNAVAILABLE", { path: "/v1/fields", message: err.message });
+      return error(502, "Encompass authentication failed");
+    }
+
+    const standardIds = ids.filter((id) => !isCustomField(id));
+    const customIds = ids.filter(isCustomField);
+    const definitions = {};
+
+    try {
+      if (standardIds.length) {
+        collectDefinitions(await fetchSchema(STANDARD_FIELDS_PATH, standardIds, token), standardIds, definitions);
+      }
+      if (customIds.length) {
+        collectDefinitions(await fetchSchema(CUSTOM_FIELDS_PATH, customIds, token), customIds, definitions);
+      }
+    } catch (err) {
+      log("ERROR", "FIELD_SCHEMA_FAILED", { message: err.message, ids: ids.length });
+      return error(502, "Encompass field schema unavailable");
+    }
+
+    if (Object.keys(definitions).length === 0) return error(404, "No field definitions found");
+    fieldCache.set(cacheKey, { body: definitions, expiresAt: now() + SCHEMA_CACHE_TTL_MS });
+    if (fieldCache.size > SCHEMA_CACHE_MAX_ENTRIES) fieldCache.clear();
+    log("INFO", "FIELD_SCHEMA_LOOKUP", { count: Object.keys(definitions).length, requested: ids.length });
+    return json(200, definitions, { "Cache-Control": "private, max-age=300" });
   }
 
   async function readLoan(event, apiKeyId, loanId) {
@@ -259,13 +398,6 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
   }
 
   async function provision(event, requestId) {
-    const expected = env.ADMIN_TOKEN;
-    if (!expected) return error(503, "Admin portal is not configured");
-    if (!safeEqual(header(event, "x-admin-token") || "", expected)) {
-      log("WARN", "PORTAL_AUTH_FAILED", { requestId });
-      return error(403, "Invalid admin token");
-    }
-
     let payload;
     try {
       payload = JSON.parse(event.body || "");
@@ -273,26 +405,39 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       return error(400, "Invalid JSON body");
     }
 
-    const tenantName = String((payload && payload.tenantName) || "").trim();
-    const encompassUserId = String((payload && payload.encompassUserId) || "").trim();
-    if (!tenantName || tenantName.length > 100 || !encompassUserId || encompassUserId.length > 100) {
-      return error(400, "tenantName and encompassUserId are required (max 100 chars)");
+    const role = String((payload && payload.role) || "").trim().toLowerCase();
+    const code = String((payload && payload.code) || "");
+    const config = roleFor(env, role);
+    if (!config || !safeEqual(code, config.code)) {
+      log("WARN", "PORTAL_INVITE_REJECTED", { requestId, role });
+      return error(403, "Invalid or expired invite link");
     }
 
-    const key = await store.createApiKey({ tenantName, encompassUserId });
+    const tenantName = String(payload.tenantName || "").trim();
+    const email = String(payload.email || "").trim();
+    if (!tenantName || tenantName.length > 100) return error(400, "tenantName is required (max 100 chars)");
+    if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      return error(400, "A valid email is required");
+    }
+
+    const key = await store.createApiKey({ tenantName, encompassUserId: config.persona });
     await store.putTenant({
       apiKeyId: key.id,
       tenantName,
-      encompassUserId,
+      email,
+      role,
+      encompassUserId: config.persona,
       status: "ACTIVE",
       createdAt: new Date(now()).toISOString(),
     });
-    log("INFO", "TENANT_PROVISIONED", { tenantName, encompassUserId, apiKeyId: key.id });
+    log("INFO", "TENANT_PROVISIONED", { tenantName, role, apiKeyId: key.id });
     return json(200, {
       message: "Tenant provisioned successfully",
       apiKey: key.value,
       tenantName,
-      encompassUserId,
+      email,
+      role,
+      encompassUserId: config.persona,
     });
   }
 
@@ -381,8 +526,21 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       if (method === "GET" && path === "/health") return json(200, { status: "ok" });
 
       if (path === "/portal") {
-        if (method === "GET") return { ...json(200, {}), headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'", "X-Frame-Options": "DENY" }, body: renderPortal() };
         if (method === "POST") return await provision(event, requestId);
+        if (method !== "GET") return error(405, "Method not allowed");
+        const role = String(event.queryStringParameters?.role || "").trim().toLowerCase();
+        const code = String(event.queryStringParameters?.code || "");
+        if (!role && !code) return html(200, renderPortal());
+        const config = roleFor(env, role);
+        if (!config || !safeEqual(code, config.code)) {
+          log("WARN", "PORTAL_INVITE_REJECTED", { requestId, role: role || "unknown" });
+          return html(403, renderPortal({ error: "This invite link is invalid or has expired." }));
+        }
+        return html(200, renderPortal({ role: config }));
+      }
+
+      if (path === "/v1/fields") {
+        if (method === "GET") return await fieldDefinitions(event, apiKeyId);
         return error(405, "Method not allowed");
       }
 
@@ -415,19 +573,25 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
   };
 }
 
-function renderPortal() {
+function renderPortal({ role, error } = {}) {
+  const catalogRows = FIELD_CATALOG.map(
+    (field) =>
+      `<tr><td>${escapeHtml(field.category)}</td><td>${escapeHtml(field.name)}</td><td class="field-id">${field.id}</td><td>${field.type}</td><td><code>${escapeHtml(field.sample)}</code></td></tr>`,
+  ).join("");
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Encompass Gateway Management</title>
+<title>Encompass Gateway Portal</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #0f172a; color: #e2e8f0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
-  main { width: 100%; max-width: 560px; background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 32px; }
+  main { width: 100%; max-width: 860px; background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 32px; }
   h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+  h2 { margin: 0 0 8px; font-size: 15px; }
   p.sub { margin: 6px 0 24px; color: #94a3b8; font-size: 13px; }
   label { display: block; margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; font-weight: 600; }
   input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #f8fafc; font: inherit; }
@@ -435,34 +599,53 @@ function renderPortal() {
   button { width: 100%; margin-top: 20px; padding: 12px; border: 0; border-radius: 8px; background: #4f46e5; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   button:hover { background: #6366f1; }
   button:disabled { opacity: 0.6; cursor: progress; }
+  button.secondary { width: auto; margin: 10px 0 0; padding: 8px 12px; background: #334155; font-size: 12px; }
   .hint { margin: 6px 0 0; font-size: 12px; color: #64748b; }
   .hidden { display: none; }
   .error { margin-top: 16px; padding: 10px 12px; border-radius: 8px; background: #450a0a; border: 1px solid #7f1d1d; color: #fecaca; font-size: 13px; }
+  .notice { margin: 18px 0; padding: 14px; border-radius: 10px; background: #0f172a; border: 1px solid #334155; color: #cbd5e1; font-size: 13px; }
+  .invite { margin: 18px 0 4px; }
+  .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #312e81; color: #c7d2fe; font-size: 12px; font-weight: 600; }
   .ok { margin-top: 20px; padding: 16px; border-radius: 10px; background: #0f172a; border: 1px solid #065f46; }
   .ok h2 { margin: 0 0 8px; font-size: 14px; color: #34d399; }
   .keyrow { display: flex; gap: 8px; margin-bottom: 14px; }
   .keyrow input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #fde68a; font-size: 13px; }
   .keyrow button { width: auto; margin: 0; padding: 0 14px; background: #334155; }
   .keyrow button:hover { background: #475569; }
-  pre { margin: 0; padding: 12px; background: #020617; border-radius: 8px; overflow-x: auto; font-size: 12px; color: #cbd5e1; }
+  pre { margin: 0 0 4px; padding: 12px; background: #020617; border-radius: 8px; overflow-x: auto; font-size: 12px; color: #cbd5e1; }
   a { color: #a5b4fc; font-size: 12px; }
+  .docs { margin-top: 28px; border-top: 1px solid #334155; padding-top: 20px; }
+  .table-wrap { overflow-x: auto; margin-top: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1e293b; white-space: nowrap; }
+  th { color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.field-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #fde68a; }
+  code { background: #020617; padding: 1px 5px; border-radius: 4px; font-size: 12px; color: #c7d2fe; }
 </style>
 </head>
 <body>
 <main>
   <h1>Encompass API Gateway</h1>
-  <p class="sub">Issue a scoped API key mapped to an Encompass persona. Keys inherit that user's access rights.</p>
-  <form id="form">
-    <label for="adminToken">Admin token</label>
-    <input id="adminToken" type="password" autocomplete="off" placeholder="Provided when the stack was deployed">
-    <label for="tenantName">Partner / vendor name</label>
-    <input id="tenantName" type="text" maxlength="100" placeholder="e.g. First American Title">
-    <label for="encompassUserId">Encompass impersonation user ID</label>
-    <input id="encompassUserId" type="text" maxlength="100" placeholder="e.g. api_title_vendor">
-    <p class="hint">Requests made with this key use this Encompass user's persona and permissions.</p>
-    <button id="submit" type="submit">Provision API access</button>
-  </form>
+  <p class="sub">Self-serve API access for title, broker, and appraisal partners. Your invite link locks your Encompass persona.</p>
+
+  ${error ? `<div class="error" role="alert">${escapeHtml(error)}</div>` : ""}
+
+  ${role
+    ? `<section class="invite">
+        <span class="badge">${escapeHtml(role.label)}</span>
+        <p class="hint">Persona locked to <code>${escapeHtml(role.persona)}</code>. Requests made with your key inherit these permissions.</p>
+      </section>
+      <form id="form">
+        <label for="tenantName">Company name</label>
+        <input id="tenantName" type="text" maxlength="100" placeholder="e.g. First American Title" required>
+        <label for="email">Developer email</label>
+        <input id="email" type="email" maxlength="254" placeholder="dev@firstam.com" required>
+        <button id="submit" type="submit">Generate API key</button>
+      </form>`
+    : `<div class="notice"><strong>Invite link required.</strong> Ask your lender for a role-scoped link such as <code>/portal?role=title&amp;code=...</code>. The link fixes your Encompass persona and permissions.</div>`}
+
   <div id="error" class="error hidden" role="alert"></div>
+
   <section id="result" class="ok hidden">
     <h2>Key provisioned successfully</h2>
     <p class="hint">Copy this key now. It is not stored in plaintext and will not be shown again.</p>
@@ -470,72 +653,111 @@ function renderPortal() {
       <input id="apiKey" readonly>
       <button id="copy" type="button">Copy</button>
     </div>
-    <label for="curl">Partner verification cURL</label>
+    <label>Endpoints</label>
+    <pre id="endpoints"></pre>
+    <label for="curl">Verification cURL</label>
     <pre id="curl"></pre>
-    <p><a href="#" id="again">Provision another partner</a></p>
+    <p><a href="#" id="again">Generate another key with this invite</a></p>
+  </section>
+
+  <section class="docs">
+    <h2>Common field IDs</h2>
+    <p class="hint">Use these in <code>?fields=</code>. For custom fields, call <code>GET /v1/fields?ids=CX.YOUR.FIELD</code>.</p>
+    <button id="copy-fields" type="button" class="secondary">Copy all field IDs</button>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Category</th><th>Field</th><th>ID</th><th>Type</th><th>Sample</th></tr></thead>
+        <tbody>${catalogRows}</tbody>
+      </table>
+    </div>
   </section>
 </main>
 <script>
   const $ = (id) => document.getElementById(id);
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
+  const lines = (items) => items.join(String.fromCharCode(10));
 
-  $('form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    hide('error');
-    const adminToken = $('adminToken').value.trim();
-    const tenantName = $('tenantName').value.trim();
-    const encompassUserId = $('encompassUserId').value.trim();
-    if (!adminToken || !tenantName || !encompassUserId) {
-      $('error').textContent = 'Please fill out all fields.';
-      return show('error');
-    }
-    const button = $('submit');
-    button.disabled = true;
-    button.textContent = 'Provisioning...';
-    try {
-      const res = await fetch(location.pathname, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-token': adminToken },
-        body: JSON.stringify({ tenantName, encompassUserId }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Failed to create key');
-      $('apiKey').value = data.apiKey;
-      $('curl').textContent =
-        'curl -X GET "' + location.origin + '/v1/loans/SOME_LOAN_GUID?fields=11,12,1109" \\\\\\n' +
-        '  -H "x-api-key: ' + data.apiKey + '"';
-      hide('form');
-      show('result');
-    } catch (err) {
-      $('error').textContent = err.message;
-      show('error');
-    } finally {
-      button.disabled = false;
-      button.textContent = 'Provision API access';
-    }
-  });
+  const form = $('form');
+  if (form) {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      hide('error');
+      const params = new URLSearchParams(location.search);
+      const tenantName = $('tenantName').value.trim();
+      const email = $('email').value.trim();
+      if (!tenantName || !email) {
+        $('error').textContent = 'Company name and developer email are required.';
+        return show('error');
+      }
+      const button = $('submit');
+      button.disabled = true;
+      button.textContent = 'Generating...';
+      try {
+        const res = await fetch(location.pathname, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tenantName,
+            email,
+            role: params.get('role'),
+            code: params.get('code'),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed to generate key');
+        const base = location.origin;
+        $('apiKey').value = data.apiKey;
+        $('endpoints').textContent = lines([
+          'GET    ' + base + '/v1/loans/{loanId}?fields=11,646',
+          'GET    ' + base + '/v1/fields?ids=11,646,CX.TITLE.STATUS',
+          'PATCH  ' + base + '/v1/loans/{loanId}',
+          'GET    ' + base + '/v1/jobs/{jobId}',
+        ]);
+        $('curl').textContent = lines([
+          'curl -s "' + base + '/v1/loans/SOME_LOAN_GUID?fields=11,646" -H "x-api-key: ' + data.apiKey + '"',
+          'curl -s "' + base + '/v1/fields?ids=11,646,CX.TITLE.STATUS" -H "x-api-key: ' + data.apiKey + '"',
+        ]);
+        hide('form');
+        show('result');
+      } catch (err) {
+        $('error').textContent = err.message;
+        show('error');
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Generate API key';
+      }
+    });
+  }
 
-  $('copy').addEventListener('click', async () => {
-    $('apiKey').select();
-    try { await navigator.clipboard.writeText($('apiKey').value); } catch { document.execCommand('copy'); }
-    $('copy').textContent = 'Copied';
-    setTimeout(() => { $('copy').textContent = 'Copy'; }, 1500);
-  });
+  if ($('copy')) {
+    $('copy').addEventListener('click', async () => {
+      $('apiKey').select();
+      try { await navigator.clipboard.writeText($('apiKey').value); } catch { document.execCommand('copy'); }
+      $('copy').textContent = 'Copied';
+      setTimeout(() => { $('copy').textContent = 'Copy'; }, 1500);
+    });
+  }
 
-  $('again').addEventListener('click', (event) => {
-    event.preventDefault();
-    $('tenantName').value = '';
-    $('encompassUserId').value = '';
-    hide('result');
-    hide('error');
-    show('form');
-  });
+  if ($('copy-fields')) {
+    $('copy-fields').addEventListener('click', async () => {
+      const ids = Array.from(document.querySelectorAll('td.field-id')).map((cell) => cell.textContent).join(',');
+      try { await navigator.clipboard.writeText(ids); } catch { document.execCommand('copy'); }
+      $('copy-fields').textContent = 'Copied';
+      setTimeout(() => { $('copy-fields').textContent = 'Copy all field IDs'; }, 1500);
+    });
+  }
+
+  if ($('again')) {
+    $('again').addEventListener('click', (event) => {
+      event.preventDefault();
+      location.reload();
+    });
+  }
 </script>
 </body>
 </html>`;
 }
-
 function createAwsStore(env = process.env) {
   const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
   const { DynamoDBDocumentClient, GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
@@ -619,4 +841,7 @@ exports.handler = async (event, context) => {
 exports.createHandler = createHandler;
 exports.createAwsStore = createAwsStore;
 exports.renderPortal = renderPortal;
-exports._resetReadCache = () => readCache.clear();
+exports._resetReadCache = () => {
+  readCache.clear();
+  fieldCache.clear();
+};
