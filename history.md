@@ -70,3 +70,29 @@ a new dated entry.
     retried twice then completes, one token exchange serves all operations.
 - Not verified: any AWS resource behavior, API Gateway key creation, Secrets Manager,
   DynamoDB TTL, real Encompass OAuth and loan endpoints. Recorded as BLOCKED.
+
+## 2026-11-06 — Runtime bump, template lint, and production verification
+
+- Ran `cfn-lint` against the generated template (installed with `pip --target /tmp/cfnlint`;
+  no system packages or venv changes). Its only finding was W2531: `nodejs20.x` is
+  deprecated (creation disabled 2027-07-29). This supersedes the dev doc's Node 20
+  choice: the Lambda now uses `nodejs24.x`, which still bundles AWS SDK v3 and
+  supports every API the handler uses. CI also tests Node 20 and 24.
+- CI run `42295856689` then failed on Node 24 because `node --test test/` is treated
+  as a module path there. Changed the script to `node --test` (built-in discovery),
+  which passes on both versions. This supersedes the earlier test command.
+- Verification evidence:
+  - CI run `42295967345` on `6a22a5e`: `verify (20)` and `verify (24)` both success.
+  - `cfn-lint template.yaml`: exit 0, no findings.
+  - `npm run verify`: 32/32 tests, template in sync, `template.yaml` 40,669 bytes.
+  - GitHub contents API blob for `template.yaml` (`ce73addc...`, 40,669 bytes) matches
+    `git hash-object template.yaml`; the commit-pinned raw URL matches the local
+    sha256 `9024e98b...`; `deploy.sh` blob also matches its local blob.
+  - Caveat: the raw `main` URL used by `deploy.sh` was still serving the pre-bump
+    template at check time due to raw.githubusercontent CDN caching. Repo content is
+    correct; allow a few minutes after a push before running the installer.
+- Still BLOCKED: real AWS stack deployment, API Gateway key provisioning, DynamoDB/SQS
+  behavior, and Encompass OAuth/read/write, because this machine has no AWS credentials
+  or CLI and no Encompass access.
+- Cleanup at task close: removed the throwaway `/tmp` cfn-lint install, raw artifact
+  copies, and test logs; no npm dependencies installed; no background servers left.

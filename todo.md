@@ -53,6 +53,9 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, size, in-sync
 - [x] 32/32 tests passing locally (`npm test`)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
+- [x] `cfn-lint` clean on the final template (exit 0)
+- [x] CI green on Node 20 and Node 24 (`6a22a5e`, run 42295967345)
+- [x] Production deploy artifact verified against the GitHub contents API and raw URL
 - [ ] BLOCKED: deploy stack to a real AWS account (no AWS CLI/credentials here)
 - [ ] BLOCKED: live Encompass token exchange / loan read / loan write (no Encompass access)
 - [ ] BLOCKED: API Gateway key provisioning against real AWS API Gateway

@@ -161,3 +161,5 @@ history.md            append-only work log
 - One shared usage plan/quota for all tenants (per-tenant quotas are deferred).
 - The `EncompassBaseUrl` default is `https://api.elliemae.com`; override it for
   sandbox or instance-specific hosts.
+- `deploy.sh` pulls `template.yaml` from the `main` raw URL;
+  raw.githubusercontent.com may serve a cached copy for a few minutes after a push.
