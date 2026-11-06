@@ -14,6 +14,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Scoped IAM role (no wildcard resources for data access)
 - [x] `deploy.sh` one-line CloudShell installer with outputs (superseded: now generates three role invite codes instead of an admin token)
 - [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (50,376 bytes after 2026-11-06 field/writeability work)
+- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 64,012 bytes)
 
 ## Phase 2 — Token management & impersonation
 
@@ -74,6 +75,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Production-shaped HTTP e2e: portal invite → key → fields → read → enqueue → worker → job → retry
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, invite parameters, native schema paths, size, in-sync
 - [x] 50/50 tests passing locally (`npm run verify`)
+- [x] 63/63 tests passing locally after Phase 9 (`npm run verify`; template 64,012 bytes, S3-hosted delivery)
 - [x] Field writeability/retention hardening verified at commit `83f0057` (CI run `42305287711` green on Node 20/24; Pages `built`; live index, docs, and template bytes verified)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
 - [x] `cfn-lint` clean on the final template (exit 0)
@@ -105,16 +107,22 @@ speculatively.
 
 ### Ranked backlog (all unchecked)
 
-- [ ] **P0 — Correct the loan-data retention claim and bound queue retention.**
+- [x] **P0 — Correct the loan-data retention claim and bound queue retention.**
   Replace “No loan data is ever stored” with an accurate statement: no loan
   database or mirror; write payloads transit SQS. Shorten write-queue and DLQ
   retention, enable explicit SQS encryption, add a DLQ alarm/purge procedure, and
   document the full data inventory (tenant email, jobs, tokens, SQS, CloudWatch).
-- [ ] **P0 — Make Encompass persona least privilege an explicit control and
+  Completed 2026-11-06: retention/claim fixes landed earlier; Phase 9 added
+  `DeadLetterAlarm` + `OpsAlertTopic`/optional `OpsAlertEmail`, the purge runbook
+  in README Operations, and the document/condition data paths.
+- [x] **P0 — Make Encompass persona least privilege an explicit control and
   enforce tenant status.** Require field/loan-scoped service accounts, validate
   at least one restricted persona, and document that `fields` is projection, not
   authorization. Make `tenantFor` reject non-ACTIVE tenants; if Encompass cannot
   scope fields, add a per-role allowlist and include tenant/role in cache keys.
+  Completed 2026-11-06: ACTIVE enforcement and persona documentation landed
+  earlier; Phase 9 added optional per-role `*WriteFields` allowlists enforced
+  before enqueue, failing closed when malformed.
 - [ ] **P1 — Protect portal key minting and define key/invite lifecycle.** Add a
   stage method throttle for `POST /portal`; document API Gateway key disable and
   invite rotation; add a `SECURITY.md` with private vulnerability reporting. Keep
@@ -140,13 +148,15 @@ speculatively.
   vendor integration. Add a custom domain/HSTS only if a lender requires it;
   these are not MVP requirements.
 
-### Template distribution decision (unchecked)
+### Template distribution decision (decided 2026-11-06)
 
-- [ ] **Decide before adding large controls.** `template.yaml` uses **50,376 of
-  51,200 bytes**, leaving **824 bytes**. Small code/template changes can fit,
-  but WAF, API Gateway access logging, and a full alarm set may require an
-  S3-hosted template or a separate hardening stack. Make that a deliberate
-  product/distribution decision, not an accidental limit breach.
+- [x] **Decided: keep one self-contained template and host it through S3 when
+  needed.** `template.yaml` is now **64,012 bytes**, over the 51,200-byte direct
+  limit. `deploy.sh` auto-creates/reuses an artifact bucket and passes
+  `--s3-bucket` (S3-hosted limit 1 MB); the build enforces 1,000,000 bytes and
+  names the delivery mode. Direct console upload is no longer supported for this
+  template; use the installer or an S3 URL. No separate hardening stack was
+  added.
 
 ### Implemented hardening (2026-11-06)
 
@@ -158,21 +168,30 @@ speculatively.
 - [x] Data inventory and queue retention documented in `README.md`.
 - [x] `/v1/fields` exposes `readOnly` and `fieldLock` when Encompass supplies
   them; writeability remains persona-scoped, not an API allowlist.
-- [ ] DLQ alarm/purge procedure and per-role field allowlist remain open in the
-  P0 items above.
+- [x] DLQ alarm/purge procedure and per-role field allowlist completed in Phase 9
+  (2026-11-06).
 
 ## Phase 9 — Broker origination readiness (2026-11-06)
 
 - [x] Expose `readOnly`/`fieldLock` field metadata through `/v1/fields`.
-- [x] Verify official eFolder document and enhanced-condition surfaces; document
-  that documents, conditions, and structured 1003 submission are not supported.
-- [ ] Add eFolder document list/upload/attach support using the native
-  `/documents` and `/attachmentUploadUrl` pre-signed URL flow, including binary
-  handling and tenant/role scoping.
-- [ ] Add enhanced-condition read/respond support for
-  `/loans/{loanId}/conditions`, with async jobs and the same retry policy.
+- [x] Verify official eFolder document and enhanced-condition surfaces; the
+  earlier "not supported" documentation is superseded by the routes below.
+- [x] Add eFolder document list support via native V3 `/loans/{loanId}/documents`,
+  with `requireActiveAttachments`, `includeRemoved`, `view`, `start`, and `limit`
+  passed through.
+- [x] Add attachment upload initiation via native V3
+  `/loans/{loanId}/attachmentUploadUrl`, returning Encompass's
+  `CreateAttachmentResponse` unchanged so the client can PUT bytes directly to
+  the pre-signed URL. Tenant/persona scoping and the 10 KB JSON-body cap apply.
+- [x] Add enhanced-condition read/respond via `/loans/{loanId}/conditions`
+  (`PATCH ?action=update`), with the update array validated and a subsequent read
+  proving the status change in contract tests.
+- [x] Add fake Encompass state and contract tests for documents, upload
+  initiation plus a real pre-signed PUT, and condition read/respond (63/63 pass).
 - [ ] Add a structured 1003/application write surface or a validated broker field
   pack. Current field `PATCH` is capped at 100 fields and is non-transactional.
+- [ ] BLOCKED: verify these V3 document/upload/condition routes against a live
+  Encompass tenant. Only the local fake contract is proven here.
 
 ## Deferred (YAGNI, not in MVP)
 
@@ -213,4 +232,5 @@ Do not re-propose these without a new user or lender requirement recorded in
 
 Run `deploy.sh` in AWS CloudShell with real Encompass credentials, open one printed
 role invite link, provision a key, then execute the smoke sequence in `README.md`
-(§ Deploy) and replace the BLOCKED items above.
+(§ Deploy), including the document list, pre-signed upload, and condition
+read/respond flow. Replace the BLOCKED items above with sanitized results.

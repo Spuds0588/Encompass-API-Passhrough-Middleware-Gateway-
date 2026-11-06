@@ -21,6 +21,11 @@ const READ_CACHE_MAX_ENTRIES = 500;
 const MAX_ATTEMPTS = 5;
 const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
 const FIELD_ID = /^[A-Za-z0-9._]+$/;
+const CONDITION_ID = /^[A-Za-z0-9._:-]+$/;
+const MAX_CONDITION_UPDATES = 20;
+const MAX_BODY_BYTES = 10_000;
+const DOCUMENT_QUERY_KEYS = ["requireActiveAttachments", "includeRemoved", "view", "start", "limit"];
+const CONDITION_QUERY_KEYS = ["conditionType", "includeRemoved", "view", "start", "limit"];
 const SCHEMA_CACHE_TTL_MS = 5 * 60_000;
 const SCHEMA_CACHE_MAX_ENTRIES = 200;
 const STANDARD_FIELDS_PATH = "/encompass/v3/schemas/loan/standardFields";
@@ -149,6 +154,54 @@ function roleFor(env, role) {
   return code && persona ? { role, label: config.label, code, persona } : null;
 }
 
+function pickQuery(params, allowed) {
+  const picked = {};
+  for (const key of allowed) {
+    const value = params && params[key];
+    if (value === undefined || value === null || value === "") continue;
+    if (!/^[A-Za-z0-9._-]{1,50}$/.test(String(value))) return null;
+    picked[key] = String(value);
+  }
+  return picked;
+}
+
+// Only the fields the officially verified CreateAttachment contract accepts.
+function validUpload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const file = payload.file;
+  if (!file || typeof file !== "object" || Array.isArray(file)) return null;
+  const name = typeof file.name === "string" ? file.name.trim() : "";
+  const contentType = typeof file.contentType === "string" ? file.contentType.trim() : "";
+  const size = Number(file.size);
+  if (!name || name.length > 255) return null;
+  if (!contentType || contentType.length > 100 || !contentType.includes("/")) return null;
+  if (!Number.isFinite(size) || size < 0 || size > 1_000_000_000) return null;
+  const upload = { file: { contentType, name, size } };
+  if (payload.title !== undefined) {
+    const title = typeof payload.title === "string" ? payload.title.trim() : "";
+    if (!title || title.length > 255) return null;
+    upload.title = title;
+  }
+  if (payload.assignTo !== undefined) {
+    const assignTo = payload.assignTo;
+    if (!assignTo || typeof assignTo !== "object" || Array.isArray(assignTo)) return null;
+    const entityId = typeof assignTo.entityId === "string" ? assignTo.entityId.trim() : "";
+    if (!entityId || entityId.length > 100 || assignTo.entityType !== "Document") return null;
+    upload.assignTo = { entityId, entityType: "Document" };
+  }
+  return upload;
+}
+
+// Optional per-role write allowlist. Unset means any valid field ID; malformed
+// configuration fails closed so a typo cannot silently widen a role.
+function writeAllowlist(env, role) {
+  const raw = env[`WRITE_FIELDS_${String(role || "").toUpperCase()}`];
+  if (raw === undefined || raw === "") return null;
+  const ids = String(raw).split(",").map((id) => id.trim()).filter(Boolean);
+  if (ids.length === 0 || ids.some((id) => !FIELD_ID.test(id))) return new Set();
+  return new Set(ids);
+}
+
 const html = (statusCode, body) => ({
   statusCode,
   headers: {
@@ -214,6 +267,70 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     if (!apiKeyId) return null;
     const tenant = await store.getTenant(apiKeyId);
     return tenant && tenant.status === "ACTIVE" ? tenant : null;
+  }
+
+  async function authorizedTenant(apiKeyId, action) {
+    const tenant = await tenantFor(apiKeyId);
+    if (!tenant) return { response: error(403, "Unauthorized tenant mapping") };
+    try {
+      return { tenant, token: await getScopedToken(tenant.encompassUserId) };
+    } catch (err) {
+      log("ERROR", "ENCOMPASS_AUTH_UNAVAILABLE", { action, message: err.message });
+      return { response: error(502, "Encompass authentication failed") };
+    }
+  }
+
+  async function callEncompass(token, path, { method = "GET", query = {}, body } = {}) {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) search.set(key, String(value));
+    const suffix = search.toString() ? `?${search}` : "";
+    const response = await fetchImpl(`${baseUrl()}${path}${suffix}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs()),
+    });
+    const text = await response.text().catch(() => "");
+    let parsed = null;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+    }
+    return { response, body: parsed };
+  }
+
+  function upstreamFailure(result) {
+    const status = result.response.status;
+    if (status === 423) return error(423, "Loan is locked by Encompass", { code: "FILE_LOCKED" });
+    if (status === 404) return error(404, "Encompass resource not found");
+    if (status === 429) return error(429, "Encompass rate limit reached");
+    if (status === 401 || status === 403) return error(502, "Encompass rejected gateway credentials");
+    if (status >= 500) return error(502, "Encompass unavailable");
+    return error(400, "Encompass rejected the request", { upstreamStatus: status });
+  }
+
+  async function callForLoan(event, apiKeyId, loanId, action, options) {
+    const scoped = await authorizedTenant(apiKeyId, action);
+    if (scoped.response) return { response: scoped.response };
+    const { path: loanPath, ...request } = options;
+    try {
+      const result = await callEncompass(
+        scoped.token,
+        `/encompass/v3/loans/${encodeURIComponent(loanId)}${loanPath}`,
+        request,
+      );
+      return { tenant: scoped.tenant, result };
+    } catch (err) {
+      log("ERROR", "ENCOMPASS_REQUEST_FAILED", { action, loanId, message: err.message });
+      return { response: error(err.name === "TimeoutError" ? 504 : 502, "Encompass request failed") };
+    }
   }
 
   async function fetchSchema(path, ids, token) {
@@ -357,6 +474,15 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       return error(400, "Body must contain a non-empty fields object");
     }
 
+    const allowlist = writeAllowlist(env, tenant.role);
+    if (allowlist) {
+      const blocked = Object.keys(payload.fields).filter((id) => !allowlist.has(id));
+      if (blocked.length) {
+        log("WARN", "WRITE_FIELD_NOT_ALLOWED", { loanId, role: tenant.role, blocked: blocked.slice(0, 20) });
+        return error(403, "Field not writable for this role", { fields: blocked.slice(0, 20) });
+      }
+    }
+
     const createdAt = new Date(now()).toISOString();
     const jobId = `job_${randomUUID()}`;
     const job = {
@@ -399,6 +525,124 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       updatedAt: job.updatedAt,
       error: job.error || null,
     });
+  }
+
+  async function listDocuments(event, apiKeyId, loanId) {
+    const query = pickQuery(event.queryStringParameters, DOCUMENT_QUERY_KEYS);
+    if (!query) return error(400, "Invalid documents query");
+
+    const scoped = await callForLoan(event, apiKeyId, loanId, "DOCUMENTS_LIST", { path: "/documents", query });
+    if (scoped.response) return scoped.response;
+    const { result } = scoped;
+    if (!result.response.ok) return upstreamFailure(result);
+
+    const documents = Array.isArray(result.body)
+      ? result.body
+      : Array.isArray(result.body && result.body.documents)
+        ? result.body.documents
+        : null;
+    if (!documents) return error(502, "Invalid Encompass response");
+
+    log("INFO", "DOCUMENTS_READ", { loanId, count: documents.length });
+    return json(200, { loanId, documents });
+  }
+
+  async function initiateAttachmentUpload(event, apiKeyId, loanId) {
+    const query = pickQuery(event.queryStringParameters, ["lockId"]);
+    if (!query) return error(400, "Invalid upload query");
+
+    const body = String(event.body || "");
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) return error(413, "Request body too large");
+
+    let payload;
+    try {
+      payload = JSON.parse(body || "null");
+    } catch {
+      return error(400, "Invalid JSON body");
+    }
+    const upload = validUpload(payload);
+    if (!upload) {
+      return error(400, "file.name, file.contentType and file.size are required; assignTo.entityType must be Document");
+    }
+
+    const scoped = await callForLoan(event, apiKeyId, loanId, "ATTACHMENT_UPLOAD_INITIATE", {
+      path: "/attachmentUploadUrl",
+      method: "POST",
+      query,
+      body: upload,
+    });
+    if (scoped.response) return scoped.response;
+    const { result } = scoped;
+    if (!result.response.ok) return upstreamFailure(result);
+    if (!result.body || typeof result.body !== "object" || Array.isArray(result.body)) {
+      return error(502, "Invalid Encompass response");
+    }
+
+    log("INFO", "ATTACHMENT_UPLOAD_INITIATED", {
+      loanId,
+      attachmentId: result.body.attachmentId || null,
+      assigned: Boolean(upload.assignTo),
+    });
+    return json(200, result.body);
+  }
+
+  async function listConditions(event, apiKeyId, loanId) {
+    const query = pickQuery(event.queryStringParameters, CONDITION_QUERY_KEYS);
+    if (!query) return error(400, "Invalid conditions query");
+
+    const scoped = await callForLoan(event, apiKeyId, loanId, "CONDITIONS_LIST", { path: "/conditions", query });
+    if (scoped.response) return scoped.response;
+    const { result } = scoped;
+    if (!result.response.ok) return upstreamFailure(result);
+
+    const conditions = Array.isArray(result.body)
+      ? result.body
+      : Array.isArray(result.body && result.body.conditions)
+        ? result.body.conditions
+        : null;
+    if (!conditions) return error(502, "Invalid Encompass response");
+
+    log("INFO", "CONDITIONS_READ", { loanId, count: conditions.length });
+    return json(200, { loanId, conditions });
+  }
+
+  async function updateConditions(event, apiKeyId, loanId) {
+    const body = String(event.body || "");
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) return error(413, "Request body too large");
+
+    let updates;
+    try {
+      updates = JSON.parse(body || "null");
+    } catch {
+      return error(400, "Invalid JSON body");
+    }
+    if (!Array.isArray(updates) || updates.length === 0 || updates.length > MAX_CONDITION_UPDATES) {
+      return error(400, `Body must be an array of 1-${MAX_CONDITION_UPDATES} condition updates`);
+    }
+    for (const update of updates) {
+      if (
+        !update ||
+        typeof update !== "object" ||
+        Array.isArray(update) ||
+        typeof update.id !== "string" ||
+        !CONDITION_ID.test(update.id) ||
+        update.id.length > 100
+      ) {
+        return error(400, "Each condition update requires a valid id");
+      }
+    }
+
+    const scoped = await callForLoan(event, apiKeyId, loanId, "CONDITIONS_UPDATE", {
+      path: "/conditions",
+      method: "PATCH",
+      query: { action: "update" },
+      body: updates,
+    });
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "CONDITIONS_UPDATED", { loanId, count: updates.length });
+    return json(200, { loanId, updated: updates.length });
   }
 
   async function provision(event, requestId) {
@@ -549,6 +793,15 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       }
 
       let match;
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/(documents|conditions|attachmentUploadUrl)$/))) {
+        const loanId = decode(match[1]);
+        const resource = match[2];
+        if (resource === "documents" && method === "GET") return await listDocuments(event, apiKeyId, loanId);
+        if (resource === "conditions" && method === "GET") return await listConditions(event, apiKeyId, loanId);
+        if (resource === "conditions" && method === "PATCH") return await updateConditions(event, apiKeyId, loanId);
+        if (resource === "attachmentUploadUrl" && method === "POST") return await initiateAttachmentUpload(event, apiKeyId, loanId);
+        return error(405, "Method not allowed");
+      }
       if ((match = path.match(/^\/v1\/loans\/([^/]+)$/))) {
         const loanId = decode(match[1]);
         if (method === "GET") return await readLoan(event, apiKeyId, loanId);
@@ -716,6 +969,10 @@ function renderPortal({ role, error } = {}) {
           'GET    ' + base + '/v1/loans/{loanId}?fields=11,646',
           'GET    ' + base + '/v1/fields?ids=11,646,CX.TITLE.STATUS',
           'PATCH  ' + base + '/v1/loans/{loanId}',
+          'GET    ' + base + '/v1/loans/{loanId}/documents',
+          'POST   ' + base + '/v1/loans/{loanId}/attachmentUploadUrl',
+          'GET    ' + base + '/v1/loans/{loanId}/conditions',
+          'PATCH  ' + base + '/v1/loans/{loanId}/conditions',
           'GET    ' + base + '/v1/jobs/{jobId}',
         ]);
         $('curl').textContent = lines([

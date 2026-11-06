@@ -4,9 +4,10 @@
 
 A lean, stateless Encompass passthrough gateway that runs in the lender's AWS account:
 field-filtered synchronous reads, asynchronous FIFO writes with retries, a
-role-scoped self-serve onboarding portal, and field schema discovery. It must
-keep no loan database or mirror; write payloads transit SQS and read projections
-live in Lambda memory for up to 30 seconds.
+role-scoped self-serve onboarding portal, field schema discovery, eFolder
+document listing, pre-signed attachment upload initiation, and enhanced-condition
+read/respond. It must keep no loan database or mirror; write payloads transit SQS
+and read projections live in Lambda memory for up to 30 seconds.
 
 Source of truth for scope: `README.md`, `todo.md`, and `llms.txt`. The original
 exported AI Studio chat was removed because it is no longer maintained.
@@ -64,9 +65,9 @@ is a shared responsibility. Agents working here must not imply otherwise.
 | `src/gateway.js` | The entire deployed Lambda: portal, reads, write enqueue, job status, SQS worker. Self-contained. |
 | `infra/template.yaml` | CloudFormation source with a `//__GATEWAY_CODE__` placeholder. |
 | `template.yaml` | Generated, committed deployable template. Never edit by hand. |
-| `scripts/build.js` | Inlines the handler into the template, enforces the 51,200-byte direct-upload limit, supports `--check`. |
-| `deploy.sh` | One-line AWS CloudShell deployment; fetches the committed template and deploys the stack. |
-| `dev/fake-encompass.js` | Local fake OAuth + loans + standard/custom field schema upstream, including 423 lock simulation. |
+| `scripts/build.js` | Inlines the handler into the template, enforces the 1,000,000-byte S3-hosted limit, supports `--check`. |
+| `deploy.sh` | One-line AWS CloudShell deployment; fetches the committed template, uses `--s3-bucket` above 51,200 bytes, and deploys the stack. |
+| `dev/fake-encompass.js` | Local fake OAuth + loans + schema + eFolder documents + pre-signed uploads + enhanced conditions, including 423 lock simulation. |
 | `dev/memory-store.js` | In-memory storage/queue adapter for local runs. Never deployed. |
 | `dev/server.js` | Local API Gateway + SQS emulator around the real handler. |
 | `test/*.test.js` | Unit, end-to-end HTTP, template, and static-page tests (Node built-in runner). |
@@ -80,7 +81,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 50 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 63 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -107,6 +108,17 @@ npm run dev       # local gateway at :3000 with fake Encompass
   for 5 minutes; never cache across personas.
 - Writes return `202` with a job ID; the SQS event source re-drives retryable
   Encompass failures (423/429/5xx) up to 5 attempts, then marks the job FAILED.
+- Documents use `GET /v1/loans/{id}/documents` → native V3 `/documents` and pass
+  only `requireActiveAttachments`, `includeRemoved`, `view`, `start`, `limit`.
+- Uploads use `POST /v1/loans/{id}/attachmentUploadUrl` and accept only the
+  verified `file` (`name`, `contentType`, `size`), `title`, and `assignTo`
+  (`entityId`, `entityType: Document`) fields. Return Encompass's
+  `CreateAttachmentResponse` unchanged; file bytes go to its pre-signed `url`,
+  never through the gateway, and `authorizationHeader` is never logged.
+- Conditions use native V3 `/conditions`; PATCH sends `?action=update` with an
+  array of `{ id, ... }`. Only enhanced conditions are proxied; `status`,
+  `statusDate`, and `statusOpen` are retrieve-only and must not be written.
+- Document, upload, and condition responses are `no-store` and are never cached.
 - Tests must not require AWS or Encompass. Use the dev fakes and close every
   server in `afterEach`/`finally` so the test process exits.
 
@@ -125,7 +137,15 @@ npm run dev       # local gateway at :3000 with fake Encompass
   client-supplied tenant ID). The tenant must have `status: ACTIVE`; missing or
   inactive status fails closed. Job reads enforce tenant ownership.
 - Write queues use SSE-SQS, retain payloads for 1 day, and retain DLQ messages
-  for 4 days. No loan database or mirror exists.
+  for 4 days. A CloudWatch alarm publishes to SNS when the DLQ is non-empty; the
+  purge procedure is in `README.md` under Operations. No loan database or mirror
+  exists.
+- Optional `WRITE_FIELDS_TITLE`, `WRITE_FIELDS_BROKER`, and
+  `WRITE_FIELDS_APPRAISAL` allowlists are enforced before enqueue; unset means no
+  restriction, malformed fails closed. They are a guardrail, not a substitute
+  for Encompass persona permissions.
+- Upload URLs and `authorizationHeader` values are short-lived credentials. Pass
+  them through without logging or caching.
 - Gateway IAM is scoped to the three tables, two queues, one secret, and only
   `apigateway:POST` for key provisioning.
 
@@ -154,10 +174,15 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - The deployable artifact is verified in CI on `main`
   (`.github/workflows/ci.yml`) and by fetching the raw `template.yaml` from
   GitHub, which is exactly what `deploy.sh` downloads.
-- `scripts/build.js` compacts only the inlined deploy copy (leading indentation
-  and blank lines) to keep the single-file template under 51,200 bytes. Keep the
-  source formatted; do not hand-edit `template.yaml`.
+- `scripts/build.js` compacts the inlined deploy copy and enforces 1,000,000
+  bytes. The template is about 64 KB, above CloudFormation's 51,200-byte direct
+  limit, so `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket`
+  (S3-hosted limit: 1 MB). Keep the source formatted; do not hand-edit
+  `template.yaml`.
 - To verify for real: run `deploy.sh` in AWS CloudShell, open one printed role
   invite link, provision a key, then `GET /health`, `GET /v1/fields?ids=...`,
   `GET /v1/loans/{id}?fields=...`, `PATCH /v1/loans/{id}`, and poll
-  `GET /v1/jobs/{id}`. Repeat with a mismatched role link to confirm rejection.
+  `GET /v1/jobs/{id}`. Also `GET /v1/loans/{id}/documents`, initiate an upload
+  and PUT the bytes to its URL, then `GET`/`PATCH /v1/loans/{id}/conditions` and
+  re-read to confirm the status. Repeat with a mismatched role link to confirm
+  rejection.

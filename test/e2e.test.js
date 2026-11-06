@@ -139,6 +139,58 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     assert.equal(lockedJob.body.attempts, 3);
     assert.equal(fake.state.loans.get("loan-locked")["CX.TITLE.STATUS"], "Received");
 
+    const documents = await request(`${gateway.url}/v1/loans/loan-1/documents`, {
+      headers: { "x-api-key": apiKey },
+    });
+    assert.equal(documents.status, 200);
+    assert.deepEqual(documents.body.documents.map((doc) => doc.id), ["doc-1", "doc-2"]);
+
+    const upload = await request(`${gateway.url}/v1/loans/loan-1/attachmentUploadUrl`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": apiKey },
+      body: JSON.stringify({
+        file: { contentType: "application/pdf", name: "closing-statement.pdf", size: 11 },
+        title: "Closing statement",
+        assignTo: { entityId: "doc-2", entityType: "Document" },
+      }),
+    });
+    assert.equal(upload.status, 200);
+    assert.ok(upload.body.attachmentId);
+    assert.ok(upload.body.authorizationHeader);
+
+    const put = await request(upload.body.url, {
+      method: "PUT",
+      headers: { authorization: upload.body.authorizationHeader },
+      body: Buffer.from("upload-body"),
+    });
+    assert.equal(put.status, 200);
+
+    const documentsAfter = await request(`${gateway.url}/v1/loans/loan-1/documents`, {
+      headers: { "x-api-key": apiKey },
+    });
+    const target = documentsAfter.body.documents.find((doc) => doc.id === "doc-2");
+    assert.equal(target.attachments.length, 1);
+    assert.equal(target.attachments[0].fileName, "closing-statement.pdf");
+
+    const conditions = await request(`${gateway.url}/v1/loans/loan-1/conditions`, {
+      headers: { "x-api-key": apiKey },
+    });
+    assert.equal(conditions.status, 200);
+    assert.equal(conditions.body.conditions[0].status, "Requested");
+
+    const responded = await request(`${gateway.url}/v1/loans/loan-1/conditions`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-api-key": apiKey },
+      body: JSON.stringify([{ id: "condition-1", tracking: [{ status: "Received", isChecked: true }] }]),
+    });
+    assert.equal(responded.status, 200);
+    assert.equal(responded.body.updated, 1);
+
+    const conditionsAfter = await request(`${gateway.url}/v1/loans/loan-1/conditions`, {
+      headers: { "x-api-key": apiKey },
+    });
+    assert.equal(conditionsAfter.body.conditions[0].status, "Received");
+
     assert.equal(fake.state.tokenExchanges, 1);
 
     const unknownJob = await request(`${gateway.url}/v1/jobs/job_missing`, {

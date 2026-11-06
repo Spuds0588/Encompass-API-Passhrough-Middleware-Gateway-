@@ -30,11 +30,13 @@ existing links keep working.
 Environment overrides: `STACK_NAME`, `AWS_REGION`, `ENCOMPASS_INSTANCE`,
 `ENCOMPASS_CLIENT_ID`, `ENCOMPASS_CLIENT_SECRET`, `TITLE_INVITE_CODE`,
 `BROKER_INVITE_CODE`, `APPRAISAL_INVITE_CODE`, `TITLE_PERSONA`,
-`BROKER_PERSONA`, `APPRAISAL_PERSONA`, `TEMPLATE_URL`.
+`BROKER_PERSONA`, `APPRAISAL_PERSONA`, `TEMPLATE_URL`, `ARTIFACT_BUCKET`.
 
-Prefer the console? Upload `template.yaml` directly in CloudFormation
-("Upload a template file") and fill in the same parameters. It is under the
-51,200-byte direct-upload limit.
+The committed template is larger than CloudFormation's 51,200-byte direct-upload
+limit. `deploy.sh` detects that and uploads it to an S3 bucket it creates
+(`ARTIFACT_BUCKET` overrides the name), which allows templates up to 1,000,000
+bytes. If you prefer the console, upload `template.yaml` to S3 first and choose
+"Amazon S3 URL"; direct "Upload a template file" only works below 51,200 bytes.
 
 ### Smoke test after deploy
 
@@ -67,10 +69,16 @@ curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
   `GET /v1/fields?ids=11,646,CX.TITLE.STATUS` returns live definitions from
   Encompass's native standard and custom field schema APIs. `readOnly` and
   `fieldLock` are included when Encompass supplies them.
+- **Borrower documents and conditions** — `GET /v1/loans/{id}/documents` lists
+  eFolder documents, `POST /v1/loans/{id}/attachmentUploadUrl` returns
+  Encompass's pre-signed upload URL and authorization header, and
+  `GET`/`PATCH /v1/loans/{id}/conditions` read and respond to enhanced
+  conditions. The gateway never handles the uploaded file bytes.
 - **Zero-dependency portal** — one Lambda renders the invite page, provisions
   keys, attaches them to the usage plan, and stores the tenant mapping.
 - **One-file deployment** — the whole stack lives in a single CloudFormation
-  template under the 51,200-byte direct-upload limit; no S3 bucket or Lambda zip.
+  template. When it exceeds 51,200 bytes, `deploy.sh` uploads it to S3
+automatically (1,000,000-byte limit); no Lambda zip or build service is needed.
 
 ## Community-supported
 
@@ -102,6 +110,10 @@ Vendor ──x-api-key────► API Gateway (usage plan)
                          ├── GET  /v1/fields       → Encompass field schema lookup
                          ├── GET  /v1/loans/{id}    → read proxy (field projection, 30s cache)
                          ├── PATCH /v1/loans/{id}   → SQS FIFO enqueue → 202 + job
+                         ├── GET  /v1/loans/{id}/documents          → eFolder document list
+                         ├── POST /v1/loans/{id}/attachmentUploadUrl → pre-signed upload URL
+                         ├── GET  /v1/loans/{id}/conditions          → enhanced conditions
+                         ├── PATCH /v1/loans/{id}/conditions         → condition response
                          └── GET  /v1/jobs/{id}     → job status
                                                        │
                               SQS FIFO (group = loan) ─┘─► Lambda worker ──► Encompass
@@ -121,6 +133,10 @@ Storage: DynamoDB tenants + persona tokens + jobs (TTL) · Secrets Manager (clie
 | `GET` | `/v1/fields?ids=11,646,CX.TITLE.STATUS` | `x-api-key` | `{ "11": { description, type, readOnly?, fieldLock? }, ... }` |
 | `GET` | `/v1/loans/{id}?fields=11,12,1109` | `x-api-key` | `{ id, fields: { ... }, _cached }` |
 | `PATCH` | `/v1/loans/{id}` body `{ "fields": { "1109": 450000 } }` | `x-api-key` | `202 { status: "ACCEPTED", jobId, loanId, statusUrl }` |
+| `GET` | `/v1/loans/{id}/documents?view=full` | `x-api-key` | `{ loanId, documents: [...] }` (Encompass document objects unchanged) |
+| `POST` | `/v1/loans/{id}/attachmentUploadUrl` body `{ file, title?, assignTo? }` | `x-api-key` | Encompass `CreateAttachmentResponse` (`attachmentId`, `authorizationHeader`, `url`, `multiChunkRequired`, `expiresAt`) |
+| `GET` | `/v1/loans/{id}/conditions?conditionType=Underwriting` | `x-api-key` | `{ loanId, conditions: [...] }` (enhanced conditions) |
+| `PATCH` | `/v1/loans/{id}/conditions` body `[{ "id": "...", "tracking": [{ "status": "Received", "isChecked": true }] }]` | `x-api-key` | `{ loanId, updated }` |
 | `GET` | `/v1/jobs/{id}` | `x-api-key` | `{ jobId, loanId, status, attempts, createdAt, updatedAt, error }` |
 
 Job statuses: `PENDING` → `RETRYING` → `COMPLETED` / `FAILED`.
@@ -140,6 +156,22 @@ curl -s -X PATCH "$GATEWAY_URL/v1/loans/LOAN_GUID" \
   -d '{"fields":{"1109":525000}}'
 ```
 
+### Document upload flow
+
+1. `POST /v1/loans/{loanId}/attachmentUploadUrl` with the verified Encompass body:
+   `{"file":{"contentType":"application/pdf","name":"returns.pdf","size":1234},"title":"Tax returns","assignTo":{"entityId":"DOC_GUID","entityType":"Document"}}`.
+   `assignTo` is optional; without it Encompass files the attachment as unassigned.
+   Add `?lockId=...` only if the persona already holds a loan lock.
+2. Take `url` and `authorizationHeader` from the `200` response and `PUT` the raw
+   file bytes to `url` with `Authorization: <authorizationHeader>`. Do **not** send
+   the `x-api-key` to that URL; it is a short-lived Encompass upload credential.
+3. Re-read `GET /v1/loans/{loanId}/documents` to confirm the attachment.
+
+File bytes go directly to Encompass storage and never pass through the gateway.
+If a response has `multiChunkRequired: true` (files over 60 MB), Encompass's
+multi-chunk `commitUrl` flow is required; the gateway passes the response through
+but does not orchestrate chunks. Treat `authorizationHeader` as a secret.
+
 ### Roles and personas
 
 | Role | Persona parameter | Default service account | Invite parameter |
@@ -153,26 +185,31 @@ vendor holding one invite link cannot mint a key for another role.
 
 ## Broker 1003, documents, and conditions
 
-The gateway is a field-level passthrough, not a complete broker origination
-client. A broker can write 1003 data when it knows the Encompass field IDs, but
-at most 100 fields per async job. Larger applications must be split across jobs;
-there is no transaction across jobs.
+The gateway supports the document and condition parts of a broker workflow:
+list eFolder documents, initiate a pre-signed attachment upload, read enhanced
+conditions, and respond to a condition so a later read shows the new status.
+These are thin passthroughs of the officially verified V3 contracts; the gateway
+does not reinterpret document or condition objects.
 
-`GET /v1/fields` exposes `readOnly` and `fieldLock` when Encompass supplies them,
-so a broker can identify fields Encompass marks non-writable. That is visibility,
-not authorization: the persona still decides whether a write is allowed, and
-`fields` projection is not an access-control list.
+A broker can write 1003 data when it knows the Encompass field IDs, but at most
+100 fields per async job. Larger applications must be split across jobs; there is
+no transaction across jobs. `GET /v1/fields` exposes `readOnly` and `fieldLock`
+when Encompass supplies them, so a broker can identify fields Encompass marks
+non-writable. That is visibility, not authorization: the persona still decides
+whether a write is allowed, `fields` projection is not an access-control list,
+and the optional per-role allowlists are a guardrail rather than a replacement
+for persona rights.
 
-Not supported today:
+Still not supported:
 
-- **Borrower documents.** There is no eFolder document, attachment, or pre-signed
-  upload route. Encompass V3 uses `/loans/{loanId}/documents` and
-  `/loans/{loanId}/attachmentUploadUrl`; this gateway is JSON-only.
-- **Conditions.** There is no enhanced-condition read or respond route.
-  Encompass V3 uses `/loans/{loanId}/conditions`.
 - **Structured 1003 submission.** There is no application/borrower-pair resource;
   only flat field `PATCH`. A full URLA may exceed the 100-field cap and is not
   atomic across jobs.
+- **Standard (V1) conditions.** Only enhanced conditions (`/conditions`) are
+  proxied, not the separate preliminary/underwriting/post-closing V1 APIs.
+- **Document mutation and download.** Only list and upload initiation are
+  proxied; document create/update/remove, attachment download, and the
+  multi-chunk commit flow remain direct Encompass integrations.
 
 Official references: [V3 Manage Documents](https://developer.icemortgagetechnology.com/developer-connect/reference/get-list-of-documents),
 [V3 Create Attachment URL](https://developer.icemortgagetechnology.com/developer-connect/reference/create-attachment-url),
@@ -204,7 +241,7 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 50 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
+npm test          # 63 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```
@@ -240,6 +277,42 @@ todo.md               phase tracker and blocked production items
 history.md            append-only work log
 ```
 
+## Operations
+
+### DLQ alarm and purge procedure
+
+`DeadLetterAlarm` fires when the write DLQ has at least one visible message for
+one 5-minute period and publishes to `OpsAlertTopic`. Set `OpsAlertEmail` to
+receive email; confirm the SNS subscription once. A DLQ message means a write job
+exhausted its five attempts; the job record remains queryable at
+`GET /v1/jobs/{jobId}` (metadata only, 30-day TTL).
+
+1. Identify the failed job IDs from the alarm period, then read each job record
+   and search CloudWatch logs for the matching `jobId`.
+2. Capture sanitized evidence before deleting anything. Do not put field values,
+   tokens, or borrower data in tickets.
+3. Purge the DLQ only after the evidence is captured:
+
+```bash
+aws sqs purge-queue --queue-url "$DLQ_URL"
+```
+
+   Purging is irreversible, and FIFO queues enforce a 60-second cooldown between
+   purges. To inspect a message first, use `receive-message` with
+   `--max-number-of-messages 1` and delete it explicitly afterward. Never delete
+   the queue itself; CloudFormation owns it.
+4. Fix the upstream cause (persona permissions, field validity, Encompass
+   availability) before re-driving work. Failed jobs are not replayed
+   automatically; resubmit the write with a new job.
+
+### Per-role field write allowlists
+
+Set `TitleWriteFields`, `BrokerWriteFields`, or `AppraisalWriteFields` to a
+comma-separated list of field IDs to enforce a gateway-level write allowlist for
+that role. Leave a parameter empty to allow any valid field ID. A malformed list
+fails closed and rejects every write for that role. Enforced at enqueue time, so
+rejected payloads never enter SQS.
+
 ## Data handling
 
 No loan database or mirror is maintained. The actual data paths are:
@@ -250,8 +323,12 @@ No loan database or mirror is maintained. The actual data paths are:
 - **DynamoDB:** tenant name, email, role, persona, and API key ID; OAuth tokens
   with a TTL at token expiry (DynamoDB TTL deletion is eventual); job metadata for
   30 days. Job records do not contain field values.
+- **Documents and conditions:** document lists, condition reads, and upload-URL
+  responses are passed through and never stored or cached. File bytes go from the
+  vendor directly to Encompass's pre-signed URL; the gateway never proxies them
+  and never logs the upload authorization header.
 - **CloudWatch:** structured metadata logs only, never field values, tokens,
-  secrets, or API keys; retention is `LogRetentionInDays`.
+  secrets, API keys, or upload credentials; retention is `LogRetentionInDays`.
 
 Tenant records persist until removed from the table. See `todo.md` for the
 remaining deletion, alarm, and offboarding work.
@@ -273,6 +350,11 @@ remaining deletion, alarm, and offboarding work.
   never loan data. Results are cached per persona and field set for 5 minutes.
 - Gateway IAM is scoped to the three tables, two queues, one secret, and the
   API Gateway key-provisioning actions.
+- Document, upload, and condition routes resolve the tenant from the API key and
+  use that tenant's persona token. Upload responses are `no-store` and their
+  short-lived `authorizationHeader` is treated as a credential.
+- Optional `*WriteFields` allowlists are enforced before enqueue and fail closed
+  when malformed; they do not replace Encompass persona permissions.
 - The Encompass client secret is stored in Secrets Manager and cached only in
   Lambda memory. Tokens, secrets, invite codes, and keys never appear in logs.
 - Read responses are `private, max-age=30`; schema responses are
@@ -290,10 +372,17 @@ remaining deletion, alarm, and offboarding work.
   with a role link can mint keys for that role until the code is rotated.
 - The cheat sheet covers 11 common fields. The lender's `CX.*` fields are only
   discoverable through `/v1/fields` once they exist in that Encompass instance.
-- Broker support is field-level only: no eFolder document upload or
-  enhanced-condition endpoints. Full 1003s may exceed the 100-field per-job cap.
-- `/v1/fields` exposes read-only metadata, but there is no per-role field
-  allowlist; Encompass persona permissions remain the authorization control.
+- Broker support covers field reads/writes, eFolder document listing, pre-signed
+  attachment upload initiation, and enhanced-condition read/respond. It does not
+  cover structured 1003/application submission, standard (V1) conditions,
+  document download/delete, or multi-chunk orchestration; full 1003s may exceed
+  the 100-field per-job cap.
+- `/v1/fields` exposes read-only metadata. Optional `TitleWriteFields`,
+  `BrokerWriteFields`, and `AppraisalWriteFields` parameters add a gateway-level
+  write allowlist; Encompass persona permissions remain the authorization control.
+- The template is about 64 KB, over CloudFormation's 51,200-byte direct-upload
+  limit. Use `deploy.sh` (S3-hosted) or upload the template to S3 yourself; the
+  S3-hosted limit is 1,000,000 bytes.
 - The `EncompassBaseUrl` default is `https://api.elliemae.com`; override it for
   sandbox or instance-specific hosts.
 - `deploy.sh` pulls `template.yaml` from the `main` raw URL;

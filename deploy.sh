@@ -10,7 +10,11 @@
 #   STACK_NAME, AWS_REGION, ENCOMPASS_INSTANCE, ENCOMPASS_CLIENT_ID,
 #   ENCOMPASS_CLIENT_SECRET, TITLE_INVITE_CODE, BROKER_INVITE_CODE,
 #   APPRAISAL_INVITE_CODE, TITLE_PERSONA, BROKER_PERSONA, APPRAISAL_PERSONA,
-#   TEMPLATE_URL
+#   TEMPLATE_URL, ARTIFACT_BUCKET
+#
+# Templates up to 51,200 bytes deploy directly. Larger templates are uploaded
+# to an S3 bucket (created automatically unless ARTIFACT_BUCKET is set), which
+# raises CloudFormation's template limit to 1,000,000 bytes.
 
 set -euo pipefail
 
@@ -39,6 +43,7 @@ if [ -z "$CALLER_ARN" ]; then
   say "${RED}[ERROR] No active AWS session. Open AWS CloudShell or configure the CLI.${NC}"
   exit 1
 fi
+AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 say "${GREEN}Deploying as ${CALLER_ARN}${NC}"
 
 say "\n${YELLOW}[2/4] Encompass API configuration...${NC}"
@@ -78,11 +83,28 @@ if ! curl -fsSL "$TEMPLATE_URL" -o "$TMP_TEMPLATE"; then
 fi
 
 TEMPLATE_BYTES="$(wc -c < "$TMP_TEMPLATE" | tr -d ' ')"
-if [ "$TEMPLATE_BYTES" -gt 51200 ]; then
-  say "${RED}[ERROR] Template is ${TEMPLATE_BYTES} bytes; CloudFormation's direct upload limit is 51200.${NC}"
+if [ "$TEMPLATE_BYTES" -gt 1000000 ]; then
+  say "${RED}[ERROR] Template is ${TEMPLATE_BYTES} bytes; the S3-hosted CloudFormation limit is 1000000.${NC}"
   exit 1
 fi
-say "${GREEN}Template OK (${TEMPLATE_BYTES} bytes)${NC}"
+
+S3_ARGS=()
+if [ "$TEMPLATE_BYTES" -gt 51200 ]; then
+  ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-encompass-gateway-cfn-${AWS_ACCOUNT_ID}-${AWS_REGION:-us-east-1}}"
+  ARTIFACT_BUCKET="$(printf '%s' "$ARTIFACT_BUCKET" | tr '[:upper:]' '[:lower:]' | cut -c1-63)"
+  if ! aws s3api head-bucket --bucket "$ARTIFACT_BUCKET" >/dev/null 2>&1; then
+    say "${YELLOW}Creating template bucket s3://${ARTIFACT_BUCKET}...${NC}"
+    if [ -n "${AWS_REGION:-}" ] && [ "$AWS_REGION" != "us-east-1" ]; then
+      aws s3 mb "s3://$ARTIFACT_BUCKET" --region "$AWS_REGION" >/dev/null
+    else
+      aws s3 mb "s3://$ARTIFACT_BUCKET" >/dev/null
+    fi
+  fi
+  S3_ARGS=(--s3-bucket "$ARTIFACT_BUCKET")
+  say "${GREEN}Template OK (${TEMPLATE_BYTES} bytes); uploading via s3://${ARTIFACT_BUCKET}${NC}"
+else
+  say "${GREEN}Template OK (${TEMPLATE_BYTES} bytes); direct upload${NC}"
+fi
 
 say "\n${YELLOW}[4/4] Deploying stack ${STACK_NAME}...${NC}"
 say "${BLUE}This provisions API Gateway, Lambda, SQS FIFO, DynamoDB, and Secrets Manager.${NC}"
@@ -94,6 +116,7 @@ fi
 
 aws cloudformation deploy \
   "${REGION_ARGS[@]}" \
+  "${S3_ARGS[@]}" \
   --template-file "$TMP_TEMPLATE" \
   --stack-name "$STACK_NAME" \
   --capabilities CAPABILITY_IAM \

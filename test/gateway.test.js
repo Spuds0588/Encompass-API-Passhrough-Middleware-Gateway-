@@ -319,6 +319,14 @@ test("inactive tenants are denied across authenticated routes", async () => {
     httpEvent({ path: "/v1/fields", query: { ids: "11" } }),
     httpEvent({ method: "PATCH", path: "/v1/loans/loan-1", body: { fields: { 1109: 1 } } }),
     httpEvent({ path: "/v1/jobs/job_missing" }),
+    httpEvent({ path: "/v1/loans/loan-1/documents" }),
+    httpEvent({ path: "/v1/loans/loan-1/conditions" }),
+    httpEvent({ method: "PATCH", path: "/v1/loans/loan-1/conditions", body: [{ id: "condition-1" }] }),
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/attachmentUploadUrl",
+      body: { file: { name: "a.pdf", contentType: "application/pdf", size: 1 } },
+    }),
   ]) {
     assert.equal((await handler(request)).statusCode, 403);
   }
@@ -415,6 +423,195 @@ test("portal serves hardened HTML", async () => {
   assert.match(response.headers["Content-Type"], /text\/html/);
   assert.match(response.headers["Content-Security-Policy"], /frame-ancestors 'none'/);
   assert.match(response.body, /Encompass API Gateway/);
+});
+
+test("GET documents returns eFolder documents for the tenant", async () => {
+  const response = await handler(httpEvent({ path: "/v1/loans/loan-1/documents", query: { view: "full" } }));
+  assert.equal(response.statusCode, 200);
+
+  const body = parse(response);
+  assert.equal(body.loanId, "loan-1");
+  assert.equal(body.documents.length, 2);
+  assert.equal(body.documents[0].attachments[0].fileName, "credit-report.pdf");
+  assert.equal(fake.state.documentReads, 1);
+});
+
+test("documents query is validated and supports Encompass filters", async () => {
+  const active = await handler(
+    httpEvent({ path: "/v1/loans/loan-1/documents", query: { requireActiveAttachments: "true" } }),
+  );
+  assert.equal(active.statusCode, 200);
+  assert.deepEqual(parse(active).documents.map((doc) => doc.id), ["doc-1"]);
+
+  assert.equal((await handler(httpEvent({ path: "/v1/loans/loan-1/documents", query: { view: "bogus;drop" } }))).statusCode, 400);
+  assert.equal((await handler(httpEvent({ path: "/v1/loans/missing/documents" }))).statusCode, 404);
+});
+
+test("attachment upload initiation returns the verified pre-signed contract", async () => {
+  const response = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/attachmentUploadUrl",
+      body: {
+        file: { contentType: "application/pdf", name: "returns.pdf", size: 2048 },
+        title: "Tax returns",
+        assignTo: { entityId: "doc-2", entityType: "Document" },
+      },
+    }),
+  );
+  assert.equal(response.statusCode, 200);
+
+  const body = parse(response);
+  assert.match(body.attachmentId, /^attachment-/);
+  assert.ok(body.authorizationHeader);
+  assert.match(body.url, /\/upload\//);
+  assert.equal(body.multiChunkRequired, false);
+  assert.equal(fake.state.uploadInitiations, 1);
+});
+
+test("pre-signed upload attaches the file and a later document read shows it", async () => {
+  const initiated = parse(
+    await handler(
+      httpEvent({
+        method: "POST",
+        path: "/v1/loans/loan-1/attachmentUploadUrl",
+        body: {
+          file: { contentType: "application/pdf", name: "returns.pdf", size: 2048 },
+          assignTo: { entityId: "doc-2", entityType: "Document" },
+        },
+      }),
+    ),
+  );
+
+  const uploaded = await fetch(initiated.url, {
+    method: "PUT",
+    headers: { Authorization: initiated.authorizationHeader },
+    body: Buffer.from("pdf-bytes"),
+  });
+  assert.equal(uploaded.status, 200);
+  assert.equal(fake.state.uploadedBytes, 9);
+
+  const documents = parse(await handler(httpEvent({ path: "/v1/loans/loan-1/documents" }))).documents;
+  const target = documents.find((doc) => doc.id === "doc-2");
+  assert.equal(target.attachments.length, 1);
+  assert.equal(target.attachments[0].fileName, "returns.pdf");
+  assert.equal(target.attachments[0].fileSize, 9);
+});
+
+test("attachment upload validates the file and assignment", async () => {
+  const invalid = [
+    {},
+    { file: { name: "a.pdf", contentType: "application/pdf" } },
+    { file: { name: "", contentType: "application/pdf", size: 1 } },
+    { file: { name: "a.pdf", contentType: "pdf", size: 1 } },
+    { file: { name: "a.pdf", contentType: "application/pdf", size: -1 } },
+    { file: { name: "a.pdf", contentType: "application/pdf", size: 1 }, assignTo: { entityId: "doc-1", entityType: "Loan" } },
+  ];
+  for (const body of invalid) {
+    const response = await handler(httpEvent({ method: "POST", path: "/v1/loans/loan-1/attachmentUploadUrl", body }));
+    assert.equal(response.statusCode, 400, JSON.stringify(body));
+  }
+
+  const unknownDocument = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/attachmentUploadUrl",
+      body: {
+        file: { name: "a.pdf", contentType: "application/pdf", size: 1 },
+        assignTo: { entityId: "doc-missing", entityType: "Document" },
+      },
+    }),
+  );
+  assert.equal(unknownDocument.statusCode, 404);
+  assert.equal(fake.state.uploadInitiations, 0);
+});
+
+test("GET conditions returns enhanced conditions for the tenant", async () => {
+  const response = await handler(
+    httpEvent({ path: "/v1/loans/loan-1/conditions", query: { conditionType: "Underwriting" } }),
+  );
+  assert.equal(response.statusCode, 200);
+
+  const body = parse(response);
+  assert.equal(body.loanId, "loan-1");
+  assert.equal(body.conditions.length, 1);
+  assert.equal(body.conditions[0].id, "condition-1");
+  assert.equal(body.conditions[0].status, "Requested");
+  assert.equal(body.conditions[0].tracking.find((entry) => entry.status === "Received").isChecked, false);
+  assert.equal(fake.state.conditionReads, 1);
+});
+
+test("condition respond moves the status and a later read proves it", async () => {
+  const patch = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/conditions",
+      body: [{ id: "condition-1", tracking: [{ status: "Received", isChecked: true }] }],
+    }),
+  );
+  assert.equal(patch.statusCode, 200);
+  assert.deepEqual(parse(patch), { loanId: "loan-1", updated: 1 });
+  assert.equal(fake.state.conditionUpdates, 1);
+
+  const after = parse(await handler(httpEvent({ path: "/v1/loans/loan-1/conditions" })));
+  assert.equal(after.conditions[0].status, "Received");
+  assert.equal(after.conditions[0].statusOpen, true);
+  assert.equal(after.conditions[0].tracking.find((entry) => entry.status === "Received").isChecked, true);
+});
+
+test("condition update validates the array and maps unknown conditions", async () => {
+  const invalid = [
+    [],
+    {},
+    [{ title: "missing id" }],
+    [{ id: "bad id!" }],
+    Array.from({ length: 21 }, () => ({ id: "condition-1" })),
+  ];
+  for (const body of invalid) {
+    const response = await handler(httpEvent({ method: "PATCH", path: "/v1/loans/loan-1/conditions", body }));
+    assert.equal(response.statusCode, 400, JSON.stringify(body));
+  }
+
+  const missing = await handler(
+    httpEvent({ method: "PATCH", path: "/v1/loans/loan-1/conditions", body: [{ id: "condition-missing" }] }),
+  );
+  assert.equal(missing.statusCode, 404);
+});
+
+test("per-role write allowlist rejects fields outside the role", async () => {
+  const restricted = createHandler({
+    store,
+    env: { ENCOMPASS_BASE_URL: fake.url, WRITE_FIELDS_TITLE: "11,646" },
+  });
+
+  const blocked = await restricted(
+    httpEvent({ method: "PATCH", path: "/v1/loans/loan-1", body: { fields: { 1109: 1 } } }),
+  );
+  assert.equal(blocked.statusCode, 403);
+  assert.deepEqual(parse(blocked).fields, ["1109"]);
+  assert.equal(store.queue.length, 0);
+
+  const allowed = await restricted(
+    httpEvent({ method: "PATCH", path: "/v1/loans/loan-1", body: { fields: { 646: 1200 } } }),
+  );
+  assert.equal(allowed.statusCode, 202);
+
+  const open = createHandler({ store, env: { ENCOMPASS_BASE_URL: fake.url } });
+  assert.equal(
+    (await open(httpEvent({ method: "PATCH", path: "/v1/loans/loan-1", body: { fields: { 1109: 2 } } }))).statusCode,
+    202,
+  );
+});
+
+test("write allowlist fails closed when malformed", async () => {
+  const malformed = createHandler({
+    store,
+    env: { ENCOMPASS_BASE_URL: fake.url, WRITE_FIELDS_TITLE: "11,not a field" },
+  });
+  const response = await malformed(
+    httpEvent({ method: "PATCH", path: "/v1/loans/loan-1", body: { fields: { 11: "123 Main St" } } }),
+  );
+  assert.equal(response.statusCode, 403);
 });
 
 test("unknown routes return 404 and wrong methods return 405", async () => {

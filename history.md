@@ -421,3 +421,57 @@ a new dated entry.
 - This post-push entry is itself a docs-only follow-up commit; its CI, Pages, raw
   `history.md`/`todo.md`, clean-worktree, and cleanup checks are reported in the
   delivery response.
+
+## 2026-11-06 — Broker documents, attachment uploads, conditions, and size-safe delivery
+
+- Verified the official V3 contracts before coding, using the Developer Connect
+  reference and the published Postman collection rather than guessed shapes:
+  - `GET /encompass/v3/loans/{loanId}/documents` with `requireActiveAttachments`,
+    `includeRemoved`, `view`, `start`, and `limit`.
+  - `POST /encompass/v3/loans/{loanId}/attachmentUploadUrl` with optional `lockId`
+    and body `{ file: { contentType, name, size }, title?, assignTo? }`, where
+    `assignTo` is `{ entityId, entityType: "Document" }`. The response is the
+    Encompass `CreateAttachmentResponse` (`attachmentId`, `authorizationHeader`,
+    `url`, `multiChunkRequired`, `expiresAt`); the client then PUTs the bytes.
+  - `GET`/`PATCH /encompass/v3/loans/{loanId}/conditions`; PATCH uses
+    `?action=update` and an array of EnhancedConditionContract updates that
+    include `id`. Tracking entries are `{ status, isChecked }`; condition
+    `status`, `statusDate`, and `statusOpen` are retrieve-only.
+- Added four gateway routes with tenant/persona auth, query validation, a 10 KB
+  JSON-body cap, and consistent upstream error mapping:
+  `GET /v1/loans/{id}/documents`, `POST /v1/loans/{id}/attachmentUploadUrl`,
+  `GET /v1/loans/{id}/conditions`, and `PATCH /v1/loans/{id}/conditions`.
+  Documents and conditions are wrapped as `{ loanId, documents|conditions }`
+  without altering the upstream objects; upload responses pass through unchanged.
+- Extended `dev/fake-encompass.js` with eFolder document state, pre-signed upload
+  URLs and a real `PUT /upload/{id}` target, enhanced conditions, and condition
+  tracking/status updates. The fake assigns an uploaded attachment to the target
+  document so a subsequent document read proves the flow, and derives condition
+  status from the checked tracking entries.
+- Closed both remaining P0 items:
+  - Added `DeadLetterAlarm` (SQS `ApproximateNumberOfMessagesVisible` > 0 for one
+    5-minute period) publishing to `OpsAlertTopic`, with optional
+    `OpsAlertEmail` SNS subscription; documented the inspect/purge runbook in
+    `README.md` Operations.
+  - Added optional `TitleWriteFields`, `BrokerWriteFields`, and
+    `AppraisalWriteFields` parameters, wired to `WRITE_FIELDS_*` env vars. The
+    handler rejects out-of-list fields with `403` before enqueue and fails closed
+    when a configured list is malformed.
+- Resolved the template-size ceiling concretely. `scripts/build.js` now enforces
+  CloudFormation's 1,000,000-byte S3-hosted limit and reports whether the build
+  needs direct upload or S3. `deploy.sh` still deploys small templates directly;
+  above 51,200 bytes it creates/reuses `ARTIFACT_BUCKET` and passes
+  `--s3-bucket`, so the committed template is no longer capped at 51,200 bytes.
+  The generated template is 64,264 bytes. Direct console upload is documented as
+  unsupported at this size; the installer or an S3 URL is required.
+- Updated `README.md`, `agents.md`, `llms.txt`, `index.html`, `todo.md`, and the
+  portal endpoint list. Document/condition data paths, upload credential handling,
+  allowlists, and the DLQ alarm/purge procedure are documented.
+- Local verification: `npm run build` produced 64,264 bytes; `npm test` passed
+  63/63, including contract tests for document reads, upload initiation plus a
+  real pre-signed PUT, condition read/respond with a subsequent read, allowlist
+  rejection/fail-closed behavior, and template guards for the alarm, allowlists,
+  and S3-hosted size. `bash -n deploy.sh` passed.
+- No AWS or live Encompass validation is claimed: there is no AWS account, CLI,
+  or Encompass tenant on this machine. Pending at this entry: commit, push,
+  exact-SHA CI, Pages rebuild, and raw artifact checks.

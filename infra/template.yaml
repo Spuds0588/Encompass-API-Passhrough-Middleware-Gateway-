@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Encompass API Passthrough & Middleware Gateway: field-filtered read proxy,
-  async FIFO write pipeline with retries, role-scoped API key portal, and
-  field schema discovery.
+  async FIFO write pipeline with retries, role-scoped API key portal, field
+  schema discovery, eFolder document/attachment passthrough, and enhanced
+  condition read/respond.
 
 Parameters:
   EncompassInstanceId:
@@ -48,6 +49,22 @@ Parameters:
     Default: api_appraisal_template
     MinLength: 1
     Description: Encompass service account impersonated by appraisal invite links.
+  OpsAlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional email for DLQ alarm notifications. Confirm the SNS subscription.
+  TitleWriteFields:
+    Type: String
+    Default: ""
+    Description: Optional comma-separated field IDs the title role may write. Empty allows any valid field.
+  BrokerWriteFields:
+    Type: String
+    Default: ""
+    Description: Optional comma-separated field IDs the broker role may write. Empty allows any valid field.
+  AppraisalWriteFields:
+    Type: String
+    Default: ""
+    Description: Optional comma-separated field IDs the appraisal role may write. Empty allows any valid field.
   EncompassBaseUrl:
     Type: String
     Default: https://api.elliemae.com
@@ -57,6 +74,9 @@ Parameters:
     Default: 30
     MinValue: 1
     MaxValue: 3653
+
+Conditions:
+  HasOpsAlertEmail: !Not [!Equals [!Ref OpsAlertEmail, ""]]
 
 Resources:
   EncompassSecret:
@@ -118,6 +138,37 @@ Resources:
       FifoQueue: true
       MessageRetentionPeriod: 345600
       SqsManagedSseEnabled: true
+
+  OpsAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub "${AWS::StackName} gateway alerts"
+
+  OpsAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasOpsAlertEmail
+    Properties:
+      TopicArn: !Ref OpsAlertTopic
+      Protocol: email
+      Endpoint: !Ref OpsAlertEmail
+
+  DeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Write jobs reached the DLQ; inspect the queue and job records.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsAlertTopic
 
   WriteQueue:
     Type: AWS::SQS::Queue
@@ -214,6 +265,9 @@ Resources:
           PERSONA_TITLE: !Ref TitleServiceUserId
           PERSONA_BROKER: !Ref BrokerServiceUserId
           PERSONA_APPRAISAL: !Ref AppraisalServiceUserId
+          WRITE_FIELDS_TITLE: !Ref TitleWriteFields
+          WRITE_FIELDS_BROKER: !Ref BrokerWriteFields
+          WRITE_FIELDS_APPRAISAL: !Ref AppraisalWriteFields
       Code:
         ZipFile: |
           //__GATEWAY_CODE__
@@ -365,3 +419,6 @@ Outputs:
   WriteQueueUrl:
     Description: FIFO queue that buffers Encompass writes.
     Value: !Ref WriteQueue
+  AlertTopicArn:
+    Description: SNS topic for DLQ alarm notifications.
+    Value: !Ref OpsAlertTopic

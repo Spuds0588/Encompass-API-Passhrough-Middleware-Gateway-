@@ -14,8 +14,15 @@ test("committed template.yaml matches the build", () => {
   execFileSync(process.execPath, ["scripts/build.js", "--check"], { cwd: root, stdio: "pipe" });
 });
 
-test("template stays under CloudFormation's direct upload limit", () => {
-  assert.ok(Buffer.byteLength(template) < 51200, "template.yaml must be < 51200 bytes");
+test("template is within the S3-hosted limit and the deploy path scales past 51,200", () => {
+  const bytes = Buffer.byteLength(template);
+  assert.ok(bytes < 1000000, `template.yaml must be < 1000000 bytes, got ${bytes}`);
+
+  const deploy = fs.readFileSync(path.join(root, "deploy.sh"), "utf8");
+  assert.match(deploy, /--s3-bucket/);
+  assert.match(deploy, /1000000/);
+  assert.match(deploy, /ARTIFACT_BUCKET/);
+  assert.match(deploy, /51200/);
 });
 
 test("template embeds the handler and has no leftover placeholder", () => {
@@ -79,6 +86,30 @@ test("write pipeline is FIFO with retries, SSE, and bounded retention", () => {
   assert.match(template, /MessageRetentionPeriod: 86400/);
   assert.match(template, /MessageRetentionPeriod: 345600/);
   assert.match(template, /SqsManagedSseEnabled: true/);
+});
+
+test("DLQ depth alarm notifies an SNS topic", () => {
+  assert.match(template, /AWS::CloudWatch::Alarm/);
+  assert.match(template, /AWS::SNS::Topic/);
+  assert.match(template, /MetricName: ApproximateNumberOfMessagesVisible/);
+  assert.match(template, /ComparisonOperator: GreaterThanThreshold/);
+  assert.match(template, /AlarmActions:\n {8}- !Ref OpsAlertTopic/);
+  assert.match(template, /HasOpsAlertEmail/);
+});
+
+test("per-role write allowlists are wired into the Lambda environment", () => {
+  for (const name of ["TitleWriteFields", "BrokerWriteFields", "AppraisalWriteFields"]) {
+    assert.match(template, new RegExp(`${name}:`));
+  }
+  for (const name of ["WRITE_FIELDS_TITLE", "WRITE_FIELDS_BROKER", "WRITE_FIELDS_APPRAISAL"]) {
+    assert.match(template, new RegExp(`${name}: !Ref`));
+  }
+});
+
+test("embedded handler includes documents, attachment upload, and conditions", () => {
+  for (const route of ["/documents", "/attachmentUploadUrl", "/conditions", "CONDITIONS_UPDATED", "ATTACHMENT_UPLOAD_INITIATED"]) {
+    assert.ok(template.includes(route), `missing ${route}`);
+  }
 });
 
 test("deploy.sh is executable and points at this repository's template", () => {

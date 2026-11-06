@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Encompass API Passthrough Gateway | Community-Supported AWS Middleware</title>
-  <meta name="description" content="Community-supported, open-source AWS middleware for ICE Encompass: field-filtered reads, async FIFO writes, role-scoped vendor onboarding, and live standard and custom field schema discovery. Deploy with one CloudFormation template.">
+  <meta name="description" content="Community-supported, open-source AWS middleware for ICE Encompass: field-filtered reads, async FIFO writes, role-scoped vendor onboarding, field schema discovery, eFolder document listing, pre-signed attachment upload, and enhanced-condition read/respond. Deploy with one CloudFormation template.">
   <meta name="keywords" content="Encompass API, ICE Encompass, mortgage middleware, AWS Lambda, CloudFormation, API gateway, field schema, Encompass custom fields, open source">
   <meta name="author" content="Community contributors">
   <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large,max-video-preview:-1">
@@ -15,7 +15,7 @@
   <meta property="og:site_name" content="Encompass API Passthrough Gateway">
   <meta property="og:locale" content="en_US">
   <meta property="og:title" content="Encompass API Passthrough Gateway">
-  <meta property="og:description" content="Community-supported AWS middleware for field-filtered Encompass reads, async writes, role-scoped invites, and field schema discovery.">
+  <meta property="og:description" content="Community-supported AWS middleware for field-filtered Encompass reads, async writes, role-scoped invites, field schema discovery, eFolder documents, and enhanced conditions.">
   <meta property="og:url" content="https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Encompass API Passthrough Gateway">
@@ -36,7 +36,7 @@
         "@type": "SoftwareSourceCode",
         "@id": "https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/#software",
         "name": "Encompass API Passthrough Gateway",
-        "description": "Stateless AWS middleware for field-filtered Encompass reads, asynchronous FIFO writes, role-scoped self-serve onboarding, and standard and custom field schema discovery.",
+        "description": "Stateless AWS middleware for field-filtered Encompass reads, asynchronous FIFO writes, role-scoped self-serve onboarding, standard and custom field schema discovery, eFolder document listing, pre-signed attachment upload, and enhanced-condition read/respond.",
         "codeRepository": "https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-",
         "license": "https://opensource.org/license/mit",
         "programmingLanguage": {
@@ -72,7 +72,7 @@
             "name": "Does the gateway store loan data?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "It keeps no loan database or mirror. It reads from Encompass on demand and proxies writes. Tenant mappings, short-lived OAuth tokens, and job metadata are stored in DynamoDB; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days); read projections stay in Lambda memory for up to 30 seconds."
+              "text": "It keeps no loan database or mirror. It reads from Encompass on demand and proxies writes. Tenant mappings, short-lived OAuth tokens, and job metadata are stored in DynamoDB; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days); read projections stay in Lambda memory for up to 30 seconds. Document lists and conditions are passed through without storage; uploaded file bytes go directly to Encompass's pre-signed URL."
             }
           },
           {
@@ -97,6 +97,14 @@
             "acceptedAnswer": {
               "@type": "Answer",
               "text": "The template supports title and settlement, TPO and broker, and AMC and appraisal roles. Each role is mapped server-side to its own Encompass service-account persona."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can a broker read documents and respond to conditions?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, and reads or responds to enhanced conditions. File bytes go directly to Encompass storage; the gateway never proxies or stores them."
             }
           },
           {
@@ -287,7 +295,7 @@
       <section class="hero" aria-labelledby="hero-title">
         <p class="kicker">Community-supported · MIT · AWS Lambda</p>
         <h1 id="hero-title">A small, stable API in front of ICE Encompass.</h1>
-        <p class="lede">An open-source, stateless middleware template for field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, and live standard and custom field schema discovery. It deploys into the lender's AWS account and keeps no loan database or mirror.</p>
+        <p class="lede">An open-source, stateless middleware template for field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, field schema discovery, eFolder documents, and enhanced conditions. It deploys into the lender's AWS account and keeps no loan database or mirror.</p>
         <div class="actions">
           <a class="button primary" href="#deploy">Deploy the template</a>
           <a class="button" href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">Read the source</a>
@@ -333,12 +341,16 @@
             <h3>Field schema discovery</h3>
             <p><code>GET /v1/fields?ids=11,646,CX.TITLE.STATUS</code> resolves standard and <code>CX.*</code> custom fields from Encompass's native schema APIs and reports <code>readOnly</code>/<code>fieldLock</code> when supplied.</p>
           </article>
+          <article class="card">
+            <h3>Documents &amp; conditions</h3>
+            <p><code>GET /v1/loans/{id}/documents</code>, <code>POST /v1/loans/{id}/attachmentUploadUrl</code>, and <code>GET</code>/<code>PATCH /v1/loans/{id}/conditions</code> cover eFolder documents and enhanced conditions. File bytes go straight to Encompass.</p>
+          </article>
         </div>
       </section>
 
       <section id="deploy" aria-labelledby="deploy-title">
         <h2 id="deploy-title">Deploy in one line</h2>
-        <p class="muted">Run inside AWS CloudShell, or upload the committed <code>template.yaml</code> directly in CloudFormation. The installer asks for the Encompass instance ID, API client ID, and client secret, then prints the gateway URL and three role-scoped invite links.</p>
+        <p class="muted">Run inside AWS CloudShell. The template is larger than CloudFormation's 51,200-byte direct-upload limit, so the installer creates an S3 bucket and hosts it there automatically. To use the console, upload <code>template.yaml</code> to S3 first. The installer asks for the Encompass instance ID, API client ID, and client secret, then prints the gateway URL and three role-scoped invite links.</p>
         <pre><code>bash &lt;(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)</code></pre>
         <p class="muted">Full parameter reference, smoke tests, and local development instructions are in the <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/README.md">README</a>.</p>
       </section>
@@ -357,6 +369,10 @@
               <tr><td><code>GET</code></td><td><code>/v1/fields?ids=...</code></td><td>Standard and custom field definitions</td></tr>
               <tr><td><code>GET</code></td><td><code>/v1/loans/{id}?fields=...</code></td><td>Field-filtered loan read</td></tr>
               <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}</code></td><td>Enqueue an asynchronous loan update</td></tr>
+              <tr><td><code>GET</code></td><td><code>/v1/loans/{id}/documents</code></td><td>List eFolder borrower documents</td></tr>
+              <tr><td><code>POST</code></td><td><code>/v1/loans/{id}/attachmentUploadUrl</code></td><td>Start a pre-signed attachment upload</td></tr>
+              <tr><td><code>GET</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Read enhanced loan conditions</td></tr>
+              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Respond to a condition and move its status</td></tr>
               <tr><td><code>GET</code></td><td><code>/v1/jobs/{id}</code></td><td>Job status, scoped to the owning tenant</td></tr>
             </tbody>
           </table>
@@ -418,7 +434,7 @@
         </details>
         <details>
           <summary>Does the gateway store loan data?</summary>
-          <p>It keeps no loan database or mirror. It reads from Encompass on demand and proxies writes. Tenant mappings, short-lived OAuth tokens, and job metadata are stored in DynamoDB; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days); read projections stay in Lambda memory for up to 30 seconds.</p>
+          <p>It keeps no loan database or mirror. It reads from Encompass on demand and proxies writes. Tenant mappings, short-lived OAuth tokens, and job metadata are stored in DynamoDB; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days); read projections stay in Lambda memory for up to 30 seconds. Document lists and conditions are passed through without storage; uploaded file bytes go directly to Encompass's pre-signed URL.</p>
         </details>
         <details>
           <summary>Has this been tested against a live Encompass instance?</summary>
@@ -431,6 +447,10 @@
         <details>
           <summary>What Encompass roles are supported?</summary>
           <p>The template supports title and settlement, TPO and broker, and AMC and appraisal roles. Each role is mapped server-side to its own Encompass service-account persona.</p>
+        </details>
+        <details>
+          <summary>Can a broker read documents and respond to conditions?</summary>
+          <p>Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, and reads or responds to enhanced conditions. File bytes go directly to Encompass storage; the gateway never proxies or stores them.</p>
         </details>
         <details>
           <summary>What license is the project under?</summary>

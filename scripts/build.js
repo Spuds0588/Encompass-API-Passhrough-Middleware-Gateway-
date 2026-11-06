@@ -18,7 +18,8 @@ const codePath = path.join(root, "src", "gateway.js");
 const outputPath = path.join(root, "template.yaml");
 const PLACEHOLDER = /^[ \t]*\/\/__GATEWAY_CODE__$/m;
 const INDENT = " ".repeat(9);
-const LIMIT_BYTES = 51200;
+const DIRECT_LIMIT_BYTES = 51200;
+const LIMIT_BYTES = 1000000;
 
 const code = fs.readFileSync(codePath, "utf8").trimEnd();
 if (/require\(["']\.\.?\//.test(code)) {
@@ -44,9 +45,11 @@ const bytes = Buffer.byteLength(rendered);
 
 if (bytes > LIMIT_BYTES) {
   throw new Error(
-    `template.yaml would be ${bytes} bytes, over CloudFormation's ${LIMIT_BYTES}-byte direct-upload limit`,
+    `template.yaml would be ${bytes} bytes, over CloudFormation's ${LIMIT_BYTES}-byte S3-hosted limit`,
   );
 }
+
+const delivery = bytes > DIRECT_LIMIT_BYTES ? "S3-hosted (deploy.sh uses --s3-bucket)" : "direct upload";
 
 if (process.argv.includes("--check")) {
   const current = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : "";
@@ -54,8 +57,8 @@ if (process.argv.includes("--check")) {
     console.error("template.yaml is stale. Run: npm run build");
     process.exit(1);
   }
-  console.log(`template.yaml is up to date (${bytes} bytes)`);
+  console.log(`template.yaml is up to date (${bytes} bytes, ${delivery})`);
 } else {
   fs.writeFileSync(outputPath, rendered);
-  console.log(`Wrote template.yaml (${bytes} bytes, ${Buffer.byteLength(code)} bytes of handler code)`);
+  console.log(`Wrote template.yaml (${bytes} bytes, ${delivery}, ${Buffer.byteLength(code)} bytes of handler code)`);
 }

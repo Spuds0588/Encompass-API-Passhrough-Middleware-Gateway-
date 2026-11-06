@@ -2,8 +2,8 @@
 
 /**
  * Fake Encompass API for local development and tests.
- * Speaks just enough of the OAuth, loan, and field-schema endpoints that the
- * gateway exercises.
+ * Speaks just enough of the OAuth, loan, schema, eFolder document, attachment
+ * upload, and enhanced-condition endpoints that the gateway exercises.
  */
 
 const http = require("node:http");
@@ -34,18 +34,78 @@ const DEFAULT_LOAN = {
   "CX.TITLE.FEE": 1250,
 };
 
+const DEFAULT_DOCUMENTS = {
+  "loan-1": [
+    {
+      id: "doc-1",
+      title: "Credit Report",
+      isRemoved: false,
+      attachments: [
+        {
+          id: "attachment-1",
+          fileName: "credit-report.pdf",
+          contentType: "application/pdf",
+          fileSize: 2048,
+          isActive: true,
+          dateAdded: "2026-11-01T12:00:00Z",
+        },
+      ],
+    },
+    { id: "doc-2", title: "Title Commitment", isRemoved: false, attachments: [] },
+  ],
+};
+
+const DEFAULT_CONDITIONS = {
+  "loan-1": [
+    {
+      id: "condition-1",
+      conditionType: "Underwriting",
+      title: "Provide signed federal tax returns",
+      internalDescription: "All pages and schedules for the last two years.",
+      status: "Requested",
+      statusDate: "2026-11-01T12:00:00Z",
+      statusOpen: true,
+      isRemoved: false,
+      tracking: [
+        { status: "Requested", isChecked: true, date: "2026-11-01T12:00:00Z" },
+        { status: "Received", isChecked: false },
+        { status: "Cleared", isChecked: false },
+      ],
+    },
+    {
+      id: "condition-2",
+      conditionType: "Title",
+      title: "Provide title commitment",
+      internalDescription: "",
+      status: "Cleared",
+      statusDate: "2026-10-30T09:00:00Z",
+      statusOpen: false,
+      isRemoved: false,
+      tracking: [{ status: "Cleared", isChecked: true, date: "2026-10-30T09:00:00Z" }],
+    },
+  ],
+};
+
 const isCustomField = (id) => id.startsWith("CX.") || /^CUST\d{2}FV$/.test(id);
+const timestamp = () => new Date().toISOString();
 
 const readBody = (req) =>
   new Promise((resolve) => {
-    let data = "";
+    const chunks = [];
     req.on("data", (chunk) => {
-      data += chunk;
+      chunks.push(chunk);
     });
-    req.on("end", () => resolve(data));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
   });
 
-function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlSeconds = 1800 } = {}) {
+function startFakeEncompass({
+  port = 0,
+  loans = {},
+  lockAttempts = {},
+  tokenTtlSeconds = 1800,
+  documents = DEFAULT_DOCUMENTS,
+  conditions = DEFAULT_CONDITIONS,
+} = {}) {
   const state = {
     tokenExchanges: 0,
     reads: 0,
@@ -53,11 +113,27 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
     standardSchemaCalls: 0,
     customSchemaCalls: 0,
     schemaFailure: 0,
+    documentReads: 0,
+    conditionReads: 0,
+    conditionUpdates: 0,
+    uploadInitiations: 0,
+    uploadPuts: 0,
+    uploadedBytes: 0,
     tokens: new Set(),
     loans: new Map(Object.entries(loans).map(([id, loan]) => [id, { ...loan, id }])),
     lockRemaining: new Map(Object.entries(lockAttempts)),
+    documents: new Map(),
+    conditions: new Map(),
+    uploads: new Map(),
   };
   if (state.loans.size === 0) state.loans.set(DEFAULT_LOAN.id, { ...DEFAULT_LOAN });
+
+  for (const [loanId, docs] of Object.entries(documents)) {
+    if (state.loans.has(loanId)) state.documents.set(loanId, JSON.parse(JSON.stringify(docs)));
+  }
+  for (const [loanId, items] of Object.entries(conditions)) {
+    if (state.loans.has(loanId)) state.conditions.set(loanId, JSON.parse(JSON.stringify(items)));
+  }
 
   const send = (res, status, body) => {
     res.writeHead(status, { "Content-Type": "application/json" });
@@ -78,7 +154,7 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
     const raw = await readBody(req);
 
     if (req.method === "POST" && url.pathname === "/oauth2/v1/token") {
-      const params = new URLSearchParams(raw);
+      const params = new URLSearchParams(raw.toString("utf8"));
       if (params.get("client_id") !== "test-client" || params.get("client_secret") !== "test-secret") {
         return send(res, 401, { error: "invalid_client" });
       }
@@ -87,6 +163,37 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
       const token = `tok-${params.get("subject_user_id")}-${state.tokenExchanges}`;
       state.tokens.add(token);
       return send(res, 200, { access_token: token, token_type: "Bearer", expires_in: tokenTtlSeconds });
+    }
+
+    // Pre-signed PUT target. It authenticates with the upload authorization
+    // header, not with the bearer token, exactly like Encompass cloud storage.
+    const uploadMatch = url.pathname.match(/^\/upload\/([^/]+)$/);
+    if (uploadMatch && req.method === "PUT") {
+      const attachmentId = decodeURIComponent(uploadMatch[1]);
+      const pending = state.uploads.get(attachmentId);
+      if (!pending || req.headers.authorization !== pending.authorizationHeader) {
+        return send(res, 401, { error: "invalid_upload_authorization" });
+      }
+      const bytes = raw.length;
+      state.uploadPuts += 1;
+      state.uploadedBytes += bytes;
+      const docs = state.documents.get(pending.loanId) || [];
+      let document = pending.assignTo ? docs.find((item) => item.id === pending.assignTo.entityId) : null;
+      if (!document) {
+        document = { id: `doc-unassigned-${attachmentId}`, title: "Unassigned", isRemoved: false, attachments: [] };
+        docs.push(document);
+        state.documents.set(pending.loanId, docs);
+      }
+      document.attachments.push({
+        id: attachmentId,
+        fileName: pending.file.name,
+        contentType: pending.file.contentType,
+        fileSize: bytes,
+        isActive: true,
+        dateAdded: timestamp(),
+      });
+      pending.uploaded = true;
+      return send(res, 200, {});
     }
 
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
@@ -101,6 +208,121 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
       state.customSchemaCalls += 1;
       if (state.schemaFailure) return send(res, state.schemaFailure, { error: "schema_unavailable" });
       return send(res, 200, schemaEntries(url, true));
+    }
+
+    const documentsMatch = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)\/documents$/);
+    if (documentsMatch && req.method === "GET") {
+      const loanId = decodeURIComponent(documentsMatch[1]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      state.documentReads += 1;
+      let items = state.documents.get(loanId) || [];
+      if (url.searchParams.get("includeRemoved") !== "true") items = items.filter((item) => !item.isRemoved);
+      if (url.searchParams.get("requireActiveAttachments") === "true") {
+        items = items.filter((item) => (item.attachments || []).some((attachment) => attachment.isActive !== false));
+      }
+      const start = Math.max(0, Number(url.searchParams.get("start")) || 0);
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+      const view = url.searchParams.get("view") || "detail";
+      const page = items.slice(start, start + limit).map((item) =>
+        view === "summary" ? { id: item.id, title: item.title } : item,
+      );
+      return send(res, 200, page);
+    }
+
+    const conditionsMatch = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)\/conditions$/);
+    if (conditionsMatch) {
+      const loanId = decodeURIComponent(conditionsMatch[1]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      const items = state.conditions.get(loanId) || [];
+
+      if (req.method === "GET") {
+        state.conditionReads += 1;
+        let visible = url.searchParams.get("includeRemoved") === "true" ? items : items.filter((item) => !item.isRemoved);
+        const type = url.searchParams.get("conditionType");
+        if (type) visible = visible.filter((item) => item.conditionType === type);
+        return send(res, 200, visible);
+      }
+
+      if (req.method === "PATCH" && url.searchParams.get("action") === "update") {
+        let updates;
+        try {
+          updates = JSON.parse(raw.toString("utf8"));
+        } catch {
+          return send(res, 400, { error: "invalid_json" });
+        }
+        if (!Array.isArray(updates)) return send(res, 400, { error: "invalid_condition_update" });
+
+        const updated = [];
+        for (const update of updates) {
+          const condition = items.find((item) => item.id === (update && update.id));
+          if (!condition) return send(res, 404, { error: "condition_not_found" });
+          if (Array.isArray(update.tracking)) {
+            for (const change of update.tracking) {
+              if (!change || typeof change.status !== "string") continue;
+              let entry = condition.tracking.find((item) => item.status === change.status);
+              if (!entry) {
+                entry = { status: change.status, isChecked: false };
+                condition.tracking.push(entry);
+              }
+              if (change.isChecked !== undefined) entry.isChecked = change.isChecked === true;
+              entry.date = timestamp();
+            }
+            const checked = condition.tracking.filter((entry) => entry.isChecked);
+            if (checked.length) {
+              condition.status = checked[checked.length - 1].status;
+              condition.statusDate = timestamp();
+              condition.statusOpen = !["Cleared", "Fulfilled"].includes(condition.status);
+            }
+          }
+          if (typeof update.internalDescription === "string") condition.internalDescription = update.internalDescription;
+          updated.push(condition);
+        }
+        state.conditionUpdates += 1;
+        return send(res, 200, updated);
+      }
+
+      return send(res, 405, { error: "method_not_allowed" });
+    }
+
+    const uploadMatchV3 = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)\/attachmentUploadUrl$/);
+    if (uploadMatchV3 && req.method === "POST") {
+      const loanId = decodeURIComponent(uploadMatchV3[1]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return send(res, 400, { error: "invalid_json" });
+      }
+      const file = payload && payload.file;
+      if (!file || !file.name || !file.contentType || file.size === undefined) {
+        return send(res, 400, { error: "file_required" });
+      }
+      if (payload.assignTo) {
+        if (payload.assignTo.entityType !== "Document") return send(res, 400, { error: "invalid_assign_to" });
+        const docs = state.documents.get(loanId) || [];
+        if (!docs.some((item) => item.id === payload.assignTo.entityId)) {
+          return send(res, 404, { error: "document_not_found" });
+        }
+      }
+      state.uploadInitiations += 1;
+      const attachmentId = `attachment-${state.uploadInitiations + 10}`;
+      const authorizationHeader = `upload-auth-${state.uploadInitiations}`;
+      state.uploads.set(attachmentId, {
+        loanId,
+        file,
+        assignTo: payload.assignTo || null,
+        title: payload.title || file.name,
+        authorizationHeader,
+        uploaded: false,
+      });
+      return send(res, 200, {
+        attachmentId,
+        authorizationHeader,
+        url: `http://${req.headers.host}/upload/${encodeURIComponent(attachmentId)}`,
+        multiChunkRequired: false,
+        expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+      });
     }
 
     const match = url.pathname.match(/^\/encompass\/v1\/loans\/([^/]+)$/);
@@ -124,7 +346,7 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
       if (!loan) return send(res, 404, { error: "loan_not_found" });
       let patch;
       try {
-        patch = JSON.parse(raw);
+        patch = JSON.parse(raw.toString("utf8"));
       } catch {
         return send(res, 400, { error: "invalid_json" });
       }
@@ -150,4 +372,4 @@ function startFakeEncompass({ port = 0, loans = {}, lockAttempts = {}, tokenTtlS
   });
 }
 
-module.exports = { startFakeEncompass, DEFAULT_LOAN, FIELD_DEFINITIONS };
+module.exports = { startFakeEncompass, DEFAULT_LOAN, DEFAULT_DOCUMENTS, DEFAULT_CONDITIONS, FIELD_DEFINITIONS };
