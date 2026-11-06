@@ -6,6 +6,11 @@ maintainers do not have a live Encompass developer instance or a lender AWS
 account, so real-world validation is a shared responsibility. Please contribute
 what you learn back to the project.
 
+Bugs, field-shape corrections, and fixes are a shared responsibility: file them as
+GitHub issues or pull requests with sanitized evidence (redacted field shapes,
+deployment or log excerpts), never secrets or PII. Privately-patched forks are
+discouraged. Do not claim live Encompass or AWS verification that did not happen.
+
 ## Ways to help
 
 - Report reproducible bugs with a minimal case.

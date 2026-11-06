@@ -268,3 +268,26 @@ a new dated entry.
   limitations are unchanged: no AWS account/CLI and no Encompass credentials here,
   so real deployment, API Gateway key creation, DynamoDB/SQS behavior, OAuth, loan
   calls, and live schema responses remain unverified and BLOCKED.
+
+## 2026-11-06 — Community contract enforcement
+
+- Strengthened `agents.md` so the operating rules are explicit and testable:
+  YAGNI forbids speculative endpoints, options, configuration, integrations, and UI;
+  the shortest working solution and one-line/near-one-line fixes take precedence
+  over new abstractions; cleanup leaves no `node_modules`, build output, logs,
+  temp files, scratch files, or running processes.
+- Normalized the community-support contract across `agents.md`, `llms.txt`,
+  `index.html`, `README.md`, and `CONTRIBUTING.md`: maintainers cannot validate
+  against a live Encompass tenant or lender AWS account; bugs, field-shape
+  corrections, and fixes are a shared responsibility; reports and fixes must go
+  through GitHub issues or pull requests with sanitized evidence (redacted field
+  shapes and deployment/log excerpts); never secrets or PII; privately-patched
+  forks are discouraged; and unverified live Encompass/AWS claims are forbidden.
+- Added two static guards: one requires every community surface to carry the full
+  contract, and one requires `agents.md` to carry the YAGNI, shortest-solution,
+  and dev-environment cleanup rules. Test count is now 47.
+- Verification before push: `npm run verify` passed 47/47. No endpoint, handler,
+  template, or installer bytes changed; `template.yaml` remains 49,922 bytes.
+- Pending at this entry: commit, push, exact-commit CI, GitHub Pages build, raw
+  `main` document checks, and cleanup. Limitations remain: no live AWS or Encompass
+  verification is possible from this machine.

@@ -34,9 +34,12 @@ learn:
 - **Fixes and tests:** https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/pulls and [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - **Agent/LLM entry points:** [`agents.md`](agents.md) and [`llms.txt`](llms.txt)
 
-Do not include client secrets, API keys, invite codes, OAuth tokens, loan data, or
-PII in issues or pull requests. If you can test a real Encompass tenant or AWS
-account, report the sanitized result so other deployments benefit.
+Bugs, field-shape corrections, and fixes are a shared responsibility: file them as
+GitHub issues or pull requests with sanitized evidence (redacted field shapes,
+deployment or log excerpts), never secrets or PII. Privately-patched forks are
+discouraged. If you can test a real Encompass tenant or AWS account, report the
+sanitized result so other deployments benefit. Do not claim live Encompass or AWS
+verification that did not happen.
 
 ## Architecture
 
@@ -164,7 +167,7 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 45 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
+npm test          # 47 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```
@@ -175,8 +178,9 @@ worker success, 423 retry-then-success, permanent 4xx failure, attempt exhaustio
 invite validation and role mismatch, persona locking, field schema lookup and
 caching, CSP on the portal, and template guards (API key requirement, FIFO + DLQ,
 no secret defaults, invite parameters, native schema paths, size, embedded code).
-Static-page guards check the community contribution links, `llms.txt` guidance,
-JSON-LD structured data, canonical metadata, robots policy, and sitemap.
+Static-page guards check the community contribution links, cross-surface support
+contract, agent-principle rules, `llms.txt` guidance, JSON-LD structured data,
+canonical metadata, robots policy, and sitemap.
 
 ## Repository layout
 

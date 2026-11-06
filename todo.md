@@ -73,7 +73,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Unit + integration tests with fake Encompass and in-memory AWS (Node `node:test`)
 - [x] Production-shaped HTTP e2e: portal invite → key → fields → read → enqueue → worker → job → retry
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, invite parameters, native schema paths, size, in-sync
-- [x] 45/45 tests passing locally (`npm run verify`)
+- [x] 47/47 tests passing locally (`npm run verify`)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
 - [x] `cfn-lint` clean on the final template (exit 0)
 - [x] CI green on Node 20 and Node 24 for the earlier MVP commit (`6a22a5e`)
@@ -92,6 +92,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] `robots.txt` and `sitemap.xml` for the GitHub Pages project page
 - [x] Shared-responsibility language in `README.md` and `agents.md`
 - [x] `test/static.test.js` guards for contribution links, metadata, schemas, and sitemap
+- [x] Cross-surface community-contract and agent-principle guards in the static suite
 - [x] Verify the GitHub Pages build and CI run for the community-support commit (commit `a64461f`, CI run `42299556782` green on Node 20/24; Pages build `1347436024` succeeded; live index and `llms.txt` byte-identical)
 
 ## Deferred (YAGNI, not in MVP)

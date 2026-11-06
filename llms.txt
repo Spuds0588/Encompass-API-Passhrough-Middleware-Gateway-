@@ -46,6 +46,7 @@ All `/v1/*` routes require `x-api-key`. The portal and health check are the only
 ## Community contract
 
 - This project is shared infrastructure, not a paid supported product. If you deploy it, you are part of the testing community.
+- Bugs, field-shape corrections, and fixes are a shared responsibility: file them as GitHub issues or pull requests with sanitized evidence (redacted field shapes, deployment or log excerpts), never secrets or PII. Privately-patched forks are discouraged. Do not claim live Encompass or AWS verification that did not happen.
 - Check existing GitHub issues before reporting. Include the commit, Node version, a minimal reproduction, expected versus actual behavior, sanitized logs, and whether the issue is reproducible with the local fake.
 - Never include client secrets, API keys, invite codes, OAuth tokens, loan data, or personal information in an issue, pull request, screenshot, or log.
 - If you find and fix a bug in a private deployment, upstream the smallest fix with a regression test. Do not leave the fix only in a fork.

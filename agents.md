@@ -15,32 +15,37 @@ This is an independent, community-supported template. The maintainer cannot run 
 live Encompass developer instance or a lender AWS account, so real-world validation
 is a shared responsibility. Agents working here must not imply otherwise.
 
-- When you find a bug, add a regression test and upstream the smallest fix via a
+- Bugs, field-shape corrections, and fixes are a shared responsibility: open
+  GitHub issues or pull requests with sanitized evidence (redacted field shapes,
+  deployment or log excerpts), never secrets or PII. Privately-patched forks are
+  discouraged.
+- When you fix a bug, add a regression test and upstream the smallest fix via a
   GitHub issue and pull request. Do not leave the fix only in a private fork.
 - If a fix cannot be contributed, say so explicitly and explain the limitation.
 - Read and follow `CONTRIBUTING.md`; point developers there, to `llms.txt`, and to
   the project page for the shared-testing expectations.
-- Never put client secrets, API keys, invite codes, OAuth tokens, loan data, or PII
-  in issues, pull requests, logs, screenshots, or committed files.
 - If behavior or API changes, update `README.md`, `llms.txt`, `index.html`, and this
   file in the same change. Keep `todo.md` current and append to `history.md`.
 - Do not claim live Encompass or AWS verification unless it actually happened.
 
 ## Non-negotiable principles
 
-1. **YAGNI.** Build only what the dev doc requires. No loan mirror, no sync engine,
-   no webhook receiver, no multi-region, no UI framework until a real requirement
-   exists. If a feature is not in `todo.md`, do not add it.
-2. **Prefer the smallest solution.** One Lambda handler, one table per concern,
-   zero npm runtime dependencies, one-line fixes where one line works. Do not
+1. **YAGNI.** Build only what the task or dev doc requires. Do not add speculative
+   endpoints, options, configuration, integrations, or UI. No loan mirror, no sync
+   engine, no webhook receiver, no multi-region, no UI framework until a real
+   requirement exists. If a feature is not in `todo.md`, do not add it.
+2. **Prefer the shortest working solution.** One-line or near-one-line fixes take
+   precedence over new abstractions, files, or dependencies. Keep one Lambda
+   handler, one table per concern, and zero npm runtime dependencies. Do not
    introduce a library for something the platform already does.
 3. **Clean up the dev environment.** This machine has limited memory and disk.
-   Stop every server/process you start and remove `node_modules`, uncommitted
-   build output, logs, temp files, and scratch files. The committed `template.yaml`
-   is required delivery, not litter. Avoid installing dependencies unless a task
-   genuinely needs them, and remove temporary installs when done. Before finishing
-   a task verify with `ps -eo pid,args | grep -E "node --test|dev/server"` (expect
-   none), `git status`, and a scan for `node_modules`/`dist`/`build`/`*.log`.
+   Stop every server/process you start and leave no running processes. Remove
+   `node_modules`, uncommitted build output, logs, temp files, and scratch files.
+   The committed `template.yaml` is required delivery, not litter. Avoid installing
+   dependencies unless a task genuinely needs them, and remove temporary installs
+   when done. Before finishing a task verify with
+   `ps -eo pid,args | grep -E "node --test|dev/server"` (expect none),
+   `git status`, and a scan for `node_modules`/`dist`/`build`/`*.log`.
 4. **Never backtrack.** `history.md` is append-only. If a decision changes, append
    a new dated entry that supersedes the old one; never rewrite history. Tick items
    in `todo.md`; never delete them. Revert only a change made in the current task.
@@ -72,7 +77,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 45 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 47 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```

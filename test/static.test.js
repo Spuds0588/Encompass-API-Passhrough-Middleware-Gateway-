@@ -63,6 +63,51 @@ test("index.html has SEO/AEO metadata, valid JSON-LD, and contribution links", (
   assert.ok(Array.isArray(graph.find((node) => node["@type"] === "FAQPage").mainEntity));
 });
 
+test("all community surfaces state the shared-support contract", () => {
+  const surfaces = ["agents.md", "llms.txt", "index.html", "README.md", "CONTRIBUTING.md"];
+  const required = [
+    "community-supported",
+    "shared responsibility",
+    "maintainer",
+    "live encompass",
+    "lender aws account",
+    "github issues",
+    "issues or pull requests",
+    "pull request",
+    "sanitized",
+    "redacted field shapes",
+    "deployment or log excerpts",
+    "field-shape",
+    "never secrets or pii",
+    "privately-patched forks are discouraged",
+    "do not claim live",
+  ];
+
+  for (const file of surfaces) {
+    const text = read(file).toLowerCase().replace(/\s+/g, " ");
+    for (const phrase of required) {
+      assert.ok(text.includes(phrase), `${file} is missing community contract phrase: ${phrase}`);
+    }
+  }
+});
+
+test("agents.md states enforceable YAGNI, short-solution, and cleanup rules", () => {
+  const agents = read("agents.md").toLowerCase().replace(/\s+/g, " ");
+  for (const phrase of [
+    "yagni",
+    "speculative endpoints",
+    "shortest working solution",
+    "one-line",
+    "node_modules",
+    "build output",
+    "logs",
+    "temp files",
+    "no running processes",
+  ]) {
+    assert.ok(agents.includes(phrase), `agents.md is missing enforceable rule: ${phrase}`);
+  }
+});
+
 test("robots.txt and sitemap.xml use the GitHub Pages canonical URL", () => {
   assert.match(read("robots.txt"), new RegExp(`Sitemap: ${PAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}sitemap\\.xml`));
   const sitemap = read("sitemap.xml");
