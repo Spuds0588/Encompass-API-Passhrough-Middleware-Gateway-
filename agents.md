@@ -7,7 +7,8 @@ field-filtered synchronous reads, asynchronous FIFO writes with retries, a
 role-scoped self-serve onboarding portal, and field schema discovery. It must
 never store loan data.
 
-Source of truth for scope: `chat-encompass-api-middleware-gatew-google-ai-studio-2026-11-06-1454.md`.
+Source of truth for scope: `README.md`, `todo.md`, and `llms.txt`. The original
+exported AI Studio chat was removed because it is no longer maintained.
 
 ## Community support is part of the job
 

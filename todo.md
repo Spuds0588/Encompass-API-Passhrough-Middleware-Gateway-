@@ -176,6 +176,11 @@ Do not re-propose these without a new user or lender requirement recorded in
 - [ ] WAF managed rule sets without a concrete abuse pattern — use targeted
   method throttling and rate limiting first.
 
+## Maintenance
+
+- [x] Removed the obsolete exported AI Studio dev-doc chat; current scope is defined by
+  `README.md`, `todo.md`, and `llms.txt` (2026-11-06).
+
 ## Next action
 
 Run `deploy.sh` in AWS CloudShell with real Encompass credentials, open one printed

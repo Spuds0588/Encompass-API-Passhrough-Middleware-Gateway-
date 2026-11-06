@@ -353,3 +353,16 @@ a new dated entry.
   credentials here, so live deployment, API Gateway key creation, DynamoDB/SQS
   behavior, OAuth, loan calls, and live schema responses remain unverified and
   BLOCKED. GitHub Pages remains the only deployed production surface.
+
+## 2026-11-06 — Removed obsolete exported dev documentation
+
+- Deleted `chat-encompass-api-middleware-gatew-google-ai-studio-2026-11-06-1454.md`
+  from the current tree (42,563 bytes). It was the original exported AI Studio
+  conversation and is no longer maintained or useful.
+- Updated `agents.md` so current scope points to `README.md`, `todo.md`, and
+  `llms.txt`; the historical reference in this append-only log remains as a
+  record of the initial repository state.
+- No code, endpoint, template, installer, or test changes. Git history was not
+  rewritten; the old blob remains retrievable from prior commits.
+- Verification: `npm run verify` passed 47/47; the deleted file has no remaining
+  live references. GitHub Pages remains the only deployed production surface.
