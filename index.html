@@ -56,7 +56,7 @@
             "name": "What is the Encompass API Passthrough Gateway?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "It is a stateless AWS middleware template that gives vendors a small, stable API for field-filtered ICE Encompass reads, asynchronous writes, role-scoped API key onboarding, and field schema discovery. It does not store loan data."
+              "text": "It is a stateless AWS middleware template that gives vendors a small, stable API for field-filtered ICE Encompass reads, asynchronous writes, role-scoped API key onboarding, and field schema discovery. It keeps no loan database or mirror; write payloads transit SQS and read projections stay in Lambda memory for up to 30 seconds."
             }
           },
           {
@@ -72,7 +72,7 @@
             "name": "Does the gateway store loan data?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "No. It reads from Encompass on demand and proxies writes. It stores tenant mappings, short-lived OAuth tokens, job status, and short-lived in-memory read projections, not loan payloads."
+              "text": "It keeps no loan database or mirror. It reads from Encompass on demand and proxies writes. Tenant mappings, short-lived OAuth tokens, and job metadata are stored in DynamoDB; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days); read projections stay in Lambda memory for up to 30 seconds."
             }
           },
           {
@@ -287,7 +287,7 @@
       <section class="hero" aria-labelledby="hero-title">
         <p class="kicker">Community-supported · MIT · AWS Lambda</p>
         <h1 id="hero-title">A small, stable API in front of ICE Encompass.</h1>
-        <p class="lede">An open-source, stateless middleware template for field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, and live standard and custom field schema discovery. It deploys into the lender's AWS account and never stores loan data.</p>
+        <p class="lede">An open-source, stateless middleware template for field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, and live standard and custom field schema discovery. It deploys into the lender's AWS account and keeps no loan database or mirror.</p>
         <div class="actions">
           <a class="button primary" href="#deploy">Deploy the template</a>
           <a class="button" href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">Read the source</a>
@@ -296,7 +296,7 @@
         <ul class="quickfacts">
           <li>One CloudFormation file</li>
           <li>Vendor-owned API keys</li>
-          <li>No loan payload storage</li>
+          <li>No loan database or mirror</li>
           <li>Node.js 24 on Lambda</li>
         </ul>
       </section>
@@ -331,7 +331,7 @@
           </article>
           <article class="card">
             <h3>Field schema discovery</h3>
-            <p><code>GET /v1/fields?ids=11,646,CX.TITLE.STATUS</code> resolves standard and <code>CX.*</code> custom fields from Encompass's native schema APIs.</p>
+            <p><code>GET /v1/fields?ids=11,646,CX.TITLE.STATUS</code> resolves standard and <code>CX.*</code> custom fields from Encompass's native schema APIs and reports <code>readOnly</code>/<code>fieldLock</code> when supplied.</p>
           </article>
         </div>
       </section>
@@ -410,7 +410,7 @@
         <h2 id="faq-title">Common questions</h2>
         <details>
           <summary>What is the Encompass API Passthrough Gateway?</summary>
-          <p>It is a stateless AWS middleware template that gives vendors a small, stable API for field-filtered ICE Encompass reads, asynchronous writes, role-scoped API key onboarding, and field schema discovery. It does not store loan data.</p>
+          <p>It is a stateless AWS middleware template that gives vendors a small, stable API for field-filtered ICE Encompass reads, asynchronous writes, role-scoped API key onboarding, and field schema discovery. It keeps no loan database or mirror; write payloads transit SQS and read projections stay in Lambda memory for up to 30 seconds.</p>
         </details>
         <details>
           <summary>Is this project affiliated with ICE Mortgage Technology?</summary>
@@ -418,7 +418,7 @@
         </details>
         <details>
           <summary>Does the gateway store loan data?</summary>
-          <p>No. It reads from Encompass on demand and proxies writes. It stores tenant mappings, short-lived OAuth tokens, job status, and short-lived in-memory read projections, not loan payloads.</p>
+          <p>It keeps no loan database or mirror. It reads from Encompass on demand and proxies writes. Tenant mappings, short-lived OAuth tokens, and job metadata are stored in DynamoDB; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days); read projections stay in Lambda memory for up to 30 seconds.</p>
         </details>
         <details>
           <summary>Has this been tested against a live Encompass instance?</summary>
@@ -441,7 +441,7 @@
 
     <footer>
       <p>Encompass API Passthrough Gateway · community-supported · MIT License · <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">GitHub</a> · <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/issues">Issues</a> · <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/pulls">Pull requests</a></p>
-      <p>Not affiliated with or endorsed by ICE Mortgage Technology. Encompass is a trademark of its respective owner. No loan data is stored by this project.</p>
+      <p>Not affiliated with or endorsed by ICE Mortgage Technology. Encompass is a trademark of its respective owner. No loan database or mirror is maintained by this project.</p>
     </footer>
   </div>
 </body>

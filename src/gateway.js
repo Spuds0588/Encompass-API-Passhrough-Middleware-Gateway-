@@ -131,10 +131,13 @@ function collectDefinitions(entries, requested, target) {
   for (const entry of Array.isArray(entries) ? entries : []) {
     const id = String(entry.id ?? entry.fieldId ?? entry.fieldName ?? "");
     if (!wanted.has(id)) continue;
-    target[id] = {
+    const definition = {
       description: String(entry.description || ""),
       type: String(entry.format || entry.dataType || entry.type || "STRING").toUpperCase(),
     };
+    if (typeof entry.readOnly === "boolean") definition.readOnly = entry.readOnly;
+    if (typeof entry.fieldLock === "boolean") definition.fieldLock = entry.fieldLock;
+    target[id] = definition;
   }
 }
 
@@ -209,7 +212,8 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
 
   async function tenantFor(apiKeyId) {
     if (!apiKeyId) return null;
-    return (await store.getTenant(apiKeyId)) || null;
+    const tenant = await store.getTenant(apiKeyId);
+    return tenant && tenant.status === "ACTIVE" ? tenant : null;
   }
 
   async function fetchSchema(path, ids, token) {
@@ -662,7 +666,7 @@ function renderPortal({ role, error } = {}) {
 
   <section class="docs">
     <h2>Common field IDs</h2>
-    <p class="hint">Use these in <code>?fields=</code>. For custom fields, call <code>GET /v1/fields?ids=CX.YOUR.FIELD</code>.</p>
+    <p class="hint">Use these in <code>?fields=</code>. For custom fields, call <code>GET /v1/fields?ids=CX.YOUR.FIELD</code>. Live lookups also report <code>readOnly</code> and <code>fieldLock</code> when Encompass provides them.</p>
     <button id="copy-fields" type="button" class="secondary">Copy all field IDs</button>
     <div class="table-wrap">
       <table>

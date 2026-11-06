@@ -70,12 +70,15 @@ test("field schema proxy uses native Encompass endpoints", () => {
   assert.match(template, /settings\/loan\/customFields/);
 });
 
-test("write pipeline is FIFO with retries and a dead-letter queue", () => {
+test("write pipeline is FIFO with retries, SSE, and bounded retention", () => {
   assert.match(template, /FifoQueue: true/);
   assert.match(template, /RedrivePolicy:/);
   assert.match(template, /maxReceiveCount: 5/);
   assert.match(template, /FunctionResponseTypes:\n {8}- ReportBatchItemFailures/);
   assert.match(template, /MaximumConcurrency: 5/);
+  assert.match(template, /MessageRetentionPeriod: 86400/);
+  assert.match(template, /MessageRetentionPeriod: 345600/);
+  assert.match(template, /SqsManagedSseEnabled: true/);
 });
 
 test("deploy.sh is executable and points at this repository's template", () => {

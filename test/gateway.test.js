@@ -169,6 +169,14 @@ test("GET /v1/fields resolves standard and custom definitions", async () => {
   assert.equal(fake.state.customSchemaCalls, 1);
 });
 
+test("field schema exposes writeability metadata", async () => {
+  const response = await handler(httpEvent({ path: "/v1/fields", query: { ids: "1393" } }));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(parse(response), {
+    1393: { description: "Active Milestone", type: "STRING", readOnly: true, fieldLock: true },
+  });
+});
+
 test("field definitions are cached per persona and field set", async () => {
   await handler(httpEvent({ path: "/v1/fields", query: { ids: "11,646" } }));
   const response = await handler(httpEvent({ path: "/v1/fields", query: { ids: "11,646" } }));
@@ -297,9 +305,33 @@ test("worker gives up after the maximum number of attempts", async () => {
   assert.equal(job.attempts, 5);
 });
 
+test("inactive tenants are denied across authenticated routes", async () => {
+  await store.putTenant({
+    apiKeyId: "key-1",
+    tenantName: "Acme Title",
+    encompassUserId: "persona-1",
+    role: "title",
+    status: "SUSPENDED",
+  });
+
+  for (const request of [
+    httpEvent({ path: "/v1/loans/loan-1" }),
+    httpEvent({ path: "/v1/fields", query: { ids: "11" } }),
+    httpEvent({ method: "PATCH", path: "/v1/loans/loan-1", body: { fields: { 1109: 1 } } }),
+    httpEvent({ path: "/v1/jobs/job_missing" }),
+  ]) {
+    assert.equal((await handler(request)).statusCode, 403);
+  }
+});
+
+test("PATCH caps fields at 100", async () => {
+  const fields = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [String(index + 1), index]));
+  assert.equal((await enqueue("loan-1", fields)).statusCode, 400);
+});
+
 test("job status is scoped to the requesting tenant", async () => {
   const { jobId } = parse(await enqueue());
-  await store.putTenant({ apiKeyId: "key-2", tenantName: "Other", encompassUserId: "persona-2" });
+  await store.putTenant({ apiKeyId: "key-2", tenantName: "Other", encompassUserId: "persona-2", status: "ACTIVE" });
 
   const foreign = await handler(httpEvent({ path: `/v1/jobs/${jobId}`, apiKeyId: "key-2" }));
   assert.equal(foreign.statusCode, 404);

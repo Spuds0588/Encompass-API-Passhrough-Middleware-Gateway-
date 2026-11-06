@@ -5,7 +5,8 @@
 A lean, stateless Encompass passthrough gateway that runs in the lender's AWS account:
 field-filtered synchronous reads, asynchronous FIFO writes with retries, a
 role-scoped self-serve onboarding portal, and field schema discovery. It must
-never store loan data.
+keep no loan database or mirror; write payloads transit SQS and read projections
+live in Lambda memory for up to 30 seconds.
 
 Source of truth for scope: `README.md`, `todo.md`, and `llms.txt`. The original
 exported AI Studio chat was removed because it is no longer maintained.
@@ -52,8 +53,9 @@ is a shared responsibility. Agents working here must not imply otherwise.
    in `todo.md`; never delete them. Revert only a change made in the current task.
 5. **Honest verification.** Local fakes are not Encompass and not AWS. Report what
    was tested, what could not be tested, and what remains blocked.
-6. **Stateless by default.** Cache tokens, job status, and 30-second read
-   projections only. Never persist loan payloads.
+6. **Stateless by default.** Keep only transient tokens, job status, 30-second
+   read projections, and bounded SQS write payloads. Never build a loan database
+   or mirror.
 
 ## Repo map
 
@@ -78,7 +80,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 47 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 50 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -100,8 +102,9 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - Reads project only requested fields and cap field lists at 100.
 - `/v1/fields` splits standard (`CX.`/`CUSTnnFV` excluded) and custom IDs, calls
   `schemas/loan/standardFields` and `settings/loan/customFields`, and normalizes
-  results to `{ id: { description, type } }`. Cache per persona + field set for
-  5 minutes; never cache across personas.
+  results to `{ id: { description, type, readOnly?, fieldLock? } }`; the last two
+  are included only when Encompass supplies them. Cache per persona + field set
+  for 5 minutes; never cache across personas.
 - Writes return `202` with a job ID; the SQS event source re-drives retryable
   Encompass failures (423/429/5xx) up to 5 attempts, then marks the job FAILED.
 - Tests must not require AWS or Encompass. Use the dev fakes and close every
@@ -119,7 +122,10 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - API key plaintext is returned once by the portal and never stored.
 - The Encompass client secret lives in Secrets Manager; DynamoDB uses SSE.
 - Tenant resolution is always `requestContext.identity.apiKeyId` (never a
-  client-supplied tenant ID), and job reads enforce tenant ownership.
+  client-supplied tenant ID). The tenant must have `status: ACTIVE`; missing or
+  inactive status fails closed. Job reads enforce tenant ownership.
+- Write queues use SSE-SQS, retain payloads for 1 day, and retain DLQ messages
+  for 4 days. No loan database or mirror exists.
 - Gateway IAM is scoped to the three tables, two queues, one secret, and only
   `apigateway:POST` for key provisioning.
 

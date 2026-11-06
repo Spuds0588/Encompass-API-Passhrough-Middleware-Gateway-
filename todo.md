@@ -13,7 +13,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Secrets Manager for the Encompass client secret
 - [x] Scoped IAM role (no wildcard resources for data access)
 - [x] `deploy.sh` one-line CloudShell installer with outputs (superseded: now generates three role invite codes instead of an admin token)
-- [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (49,922 bytes after 2026-11-06 field/invite work)
+- [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (50,376 bytes after 2026-11-06 field/writeability work)
 
 ## Phase 2 — Token management & impersonation
 
@@ -61,7 +61,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 
 - [x] `GET /v1/fields?ids=11,646,CX.TITLE.STATUS` with tenant auth
 - [x] Correct native Encompass endpoints: `schemas/loan/standardFields` and `settings/loan/customFields` (dev doc's `/schemas/loan/fields` is not the schema route)
-- [x] Split standard vs `CX.*` / `CUSTnnFV` custom fields and normalize to `{ id: { description, type } }`
+- [x] Split standard vs `CX.*` / `CUSTnnFV` custom fields and normalize to `{ id: { description, type, readOnly?, fieldLock? } }`
 - [x] 100-ID cap, strict field-ID validation, 404 when nothing matches, 502 on upstream/schema failure
 - [x] 5-minute per-container cache keyed by persona + field set; `Cache-Control: private, max-age=300`
 - [x] Static 11-field cheat sheet in the portal with copy-all IDs
@@ -73,7 +73,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Unit + integration tests with fake Encompass and in-memory AWS (Node `node:test`)
 - [x] Production-shaped HTTP e2e: portal invite → key → fields → read → enqueue → worker → job → retry
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, invite parameters, native schema paths, size, in-sync
-- [x] 47/47 tests passing locally (`npm run verify`)
+- [x] 50/50 tests passing locally (`npm run verify`)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
 - [x] `cfn-lint` clean on the final template (exit 0)
 - [x] CI green on Node 20 and Node 24 for the earlier MVP commit (`6a22a5e`)
@@ -97,9 +97,10 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 
 ## Phase 8 — Security, audit, compliance, and usability backlog (2026-11-06)
 
-Status: evaluation only. None of these items is implemented. Do not mark one done
-without the change, tests, and a matching `history.md` entry. These are ranked
-candidates, not permission to expand scope speculatively.
+Status: ranked backlog. Completed hardening is recorded below; remaining items
+stay open. Do not mark one done without the change, tests, and a matching
+`history.md` entry. These are ranked candidates, not permission to expand scope
+speculatively.
 
 ### Ranked backlog (all unchecked)
 
@@ -140,11 +141,37 @@ candidates, not permission to expand scope speculatively.
 
 ### Template distribution decision (unchecked)
 
-- [ ] **Decide before adding large controls.** `template.yaml` uses **49,922 of
-  51,200 bytes**, leaving **1,278 bytes**. Small code/template changes can fit,
+- [ ] **Decide before adding large controls.** `template.yaml` uses **50,376 of
+  51,200 bytes**, leaving **824 bytes**. Small code/template changes can fit,
   but WAF, API Gateway access logging, and a full alarm set may require an
   S3-hosted template or a separate hardening stack. Make that a deliberate
   product/distribution decision, not an accidental limit breach.
+
+### Implemented hardening (2026-11-06)
+
+- [x] Public docs now state no loan database or mirror; write payloads transit
+  SQS and read projections stay in Lambda memory for up to 30 seconds.
+- [x] Write queue retention shortened to 1 day, DLQ to 4 days, with SSE-SQS.
+- [x] Tenant reads, writes, schema, and job routes reject missing/non-`ACTIVE`
+  tenant status.
+- [x] Data inventory and queue retention documented in `README.md`.
+- [x] `/v1/fields` exposes `readOnly` and `fieldLock` when Encompass supplies
+  them; writeability remains persona-scoped, not an API allowlist.
+- [ ] DLQ alarm/purge procedure and per-role field allowlist remain open in the
+  P0 items above.
+
+## Phase 9 — Broker origination readiness (2026-11-06)
+
+- [x] Expose `readOnly`/`fieldLock` field metadata through `/v1/fields`.
+- [x] Verify official eFolder document and enhanced-condition surfaces; document
+  that documents, conditions, and structured 1003 submission are not supported.
+- [ ] Add eFolder document list/upload/attach support using the native
+  `/documents` and `/attachmentUploadUrl` pre-signed URL flow, including binary
+  handling and tenant/role scoping.
+- [ ] Add enhanced-condition read/respond support for
+  `/loans/{loanId}/conditions`, with async jobs and the same retry policy.
+- [ ] Add a structured 1003/application write surface or a validated broker field
+  pack. Current field `PATCH` is capped at 100 fields and is non-transactional.
 
 ## Deferred (YAGNI, not in MVP)
 

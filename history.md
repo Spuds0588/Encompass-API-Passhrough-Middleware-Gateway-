@@ -366,3 +366,36 @@ a new dated entry.
   rewritten; the old blob remains retrievable from prior commits.
 - Verification: `npm run verify` passed 47/47; the deleted file has no remaining
   live references. GitHub Pages remains the only deployed production surface.
+
+## 2026-11-06 — Broker field writeability and retention hardening
+
+- Verified the official Encompass Developer Connect contracts before changing
+  anything. The V3 standard-field schema exposes `readOnly`, `fieldLock`, and
+  related metadata; eFolder documents use `/loans/{loanId}/documents` plus the
+  `/loans/{loanId}/attachmentUploadUrl` pre-signed upload flow; enhanced
+  conditions use `/loans/{loanId}/conditions`. The gateway has none of those
+  document/condition routes, so it cannot certify a broker's full borrower-doc or
+  condition workflow. This is recorded in `README.md` and Phase 9 of `todo.md`.
+- Added `readOnly` and `fieldLock` to `/v1/fields` definitions when Encompass
+  supplies them. This gives brokers visibility into fields Encompass marks
+  non-writable, but does not replace persona authorization. The dev fake now
+  includes read-only field 1393 and the test suite covers the metadata response.
+- Enforced tenant `status: ACTIVE` in `tenantFor`; missing, suspended, or otherwise
+  non-active tenants are rejected across reads, writes, schema, and job routes.
+  Existing tenant fixtures were updated to use explicit ACTIVE status, and an
+  inactive-tenant regression test covers all authenticated route classes.
+- Corrected the public claim that no loan data is ever stored. The accurate model
+  is: no loan database or mirror; read projections live in Lambda memory for up to
+  30 seconds; write payloads transit SQS for up to 1 day (DLQ 4 days); job records
+  are metadata only with a 30-day TTL; tokens use TTL; tenant email/name persist
+  until removal. Updated `README.md`, `agents.md`, `llms.txt`, and `index.html`.
+- Shortened SQS retention to 86,400 seconds for the write queue and 345,600
+  seconds for the DLQ, and enabled `SqsManagedSseEnabled` on both queues. Added
+  template guards for retention and SSE.
+- Added an explicit 100-field `PATCH` cap regression test. Full 1003 submission
+  remains field-based and split across jobs; no structured application resource
+  was invented.
+- Verification before push: `npm run build` produced `template.yaml` at 50,376
+  bytes (824 bytes under the direct-upload limit); `npm test` passed 50/50. No AWS
+  or live Encompass validation was possible. Pending at this entry: commit, push,
+  exact-commit CI, Pages build, raw artifact checks, and cleanup.

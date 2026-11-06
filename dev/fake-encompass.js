@@ -16,7 +16,7 @@ const FIELD_DEFINITIONS = {
   3: { description: "Interest Rate", format: "DECIMAL" },
   763: { description: "Estimated Closing Date", format: "DATE" },
   1109: { description: "Loan Amount", format: "DECIMAL" },
-  1393: { description: "Active Milestone", format: "STRING" },
+  1393: { description: "Active Milestone", format: "STRING", readOnly: true, fieldLock: true },
   646: { description: "Title - Lender Title Insurance", format: "DECIMAL" },
   647: { description: "Title - Owner's Title Insurance", format: "DECIMAL" },
   648: { description: "Settlement / Escrow Fee", format: "DECIMAL" },
