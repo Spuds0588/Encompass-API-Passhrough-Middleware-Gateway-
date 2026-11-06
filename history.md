@@ -522,3 +522,22 @@ a new dated entry.
   remain unverified.
 - This entry was written before the push; exact-SHA CI, Pages, raw bytes, and the
   clean-worktree check are reported in the delivery response.
+
+## 2026-11-06 — Attachment download production verification
+
+- Pushed feature commit `dc2732ce9cfa9dfad20eb6772eb56d7ba426db37`
+  (`feat: add attachment downloads and prioritize the broker document flow`).
+- CI run `42308902340` completed successfully on that exact SHA for Node 20 and
+  Node 24 (`verify (20)` and `verify (24)` both succeeded).
+- GitHub Pages rebuilt for the exact SHA; the latest build reported `built`
+  (created `2026-11-06T23:00:52Z`).
+- Raw `main` matched local bytes for `README.md` (23,327), `todo.md` (15,972),
+  `history.md` (34,265), `llms.txt` (8,980), and `template.yaml` (66,120).
+- The live page returned HTTP 200; live `index.html` was byte-identical at
+  27,783 bytes.
+- Not verified: an actual CloudFormation deployment and live Encompass download
+  behavior (URL shape, authorization header, cloud versus media storage). The
+  local fake proves gateway routing, validation, auth, and byte transfer only.
+- This verification entry is itself a docs-only follow-up commit; its own CI,
+  Pages, raw `history.md`/`todo.md`, clean-worktree, and cleanup checks are
+  reported in the delivery response.
