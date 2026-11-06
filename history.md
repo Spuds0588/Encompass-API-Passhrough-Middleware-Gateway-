@@ -194,3 +194,24 @@ a new dated entry.
   standard/custom schema responses remain unverified and BLOCKED.
 - This is the wrap-up docs change. A subsequent append-only note records the
   wrap-up commit's CI and raw GitHub artifact verification.
+
+## 2026-11-06 — Post-push wrap-up verification
+
+- Pushed wrap-up docs commit `4e64841` (`docs: close out mission bookkeeping`) to
+  `main`. GitHub Actions CI run `42298709440` completed successfully for Node 20
+  and Node 24.
+- Raw `main` artifact checks after that push:
+  - `template.yaml`: 49,922 bytes, sha256
+    `70ce427d33b4ef82e23dc64cd318716cda359819957dfbfd8cc0078db55f70dd`; raw
+    `main` matches the committed file, and the contents API blob
+    `54f4c08d5ac605f52ced40a3da8823aa37bdd172` matches `git hash-object`.
+  - `deploy.sh`: raw `main` sha256
+    `55dedeea31b438cc157c8db053078d8e10bb3ece04a26e08b3194097b74aa84c` matches
+    the committed file; contents API blob
+    `83ddfd0d3596b6e6c7e29b894fda87e5dc227941` matches `git hash-object`.
+- The only changes in this wrap-up are `agents.md` and `history.md`; no endpoint,
+  handler, template, or installer bytes changed. Invites remain shared per role,
+  not single-use, as instructed.
+- Still BLOCKED: real AWS deployment, API Gateway key creation, DynamoDB/SQS
+  behavior, Encompass OAuth/loan calls, and live standard/custom schema responses
+  because this machine has no AWS account/CLI and no Encompass credentials.
