@@ -17,11 +17,13 @@ Source of truth for scope: `chat-encompass-api-middleware-gatew-google-ai-studio
 2. **Prefer the smallest solution.** One Lambda handler, one table per concern,
    zero npm runtime dependencies, one-line fixes where one line works. Do not
    introduce a library for something the platform already does.
-3. **Clean up the dev environment.** This machine has limited memory. Stop every
-   server/process you start, remove temp files and logs, and avoid installing
-   dependencies unless a task genuinely needs them. Before finishing a task verify
-   with `ps -eo pid,args | grep -E "node --test|dev/server"` (expect none) and
-   `git status`.
+3. **Clean up the dev environment.** This machine has limited memory and disk.
+   Stop every server/process you start and remove `node_modules`, uncommitted
+   build output, logs, temp files, and scratch files. The committed `template.yaml`
+   is required delivery, not litter. Avoid installing dependencies unless a task
+   genuinely needs them, and remove temporary installs when done. Before finishing
+   a task verify with `ps -eo pid,args | grep -E "node --test|dev/server"` (expect
+   none), `git status`, and a scan for `node_modules`/`dist`/`build`/`*.log`.
 4. **Never backtrack.** `history.md` is append-only. If a decision changes, append
    a new dated entry that supersedes the old one; never rewrite history. Tick items
    in `todo.md`; never delete them. Revert only a change made in the current task.

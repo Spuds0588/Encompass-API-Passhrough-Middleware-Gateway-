@@ -167,3 +167,30 @@ a new dated entry.
   or handler bytes, so the artifact hashes above remain the deployed content.
 - Still BLOCKED: real AWS deployment, API Gateway key creation, real Encompass
   OAuth/loans, and the live schema response shape.
+
+## 2026-11-06 — Mission wrap-up and clean-checkout verification
+
+- Audited `agents.md`, `todo.md`, and `history.md` against the shipped `main`
+  code at `e90f4eb`. All three existed and described the role-scoped invites and
+  the `GET /v1/fields` passthrough. `todo.md` already showed the MVP scope as done
+  with the AWS/Encompass blockers, so it was left intact. `agents.md` was corrected
+  to state explicitly that cleanup includes removing `node_modules`, uncommitted
+  build output, logs, temp/scratch files, and stray processes, while the committed
+  `template.yaml` remains required delivery.
+- Verification from the working tree and from a `git archive HEAD` clean copy in
+  `/tmp`:
+  - `npm run verify` passed 41/41 tests in both locations, including the template
+    `--check` sync guard.
+  - `cfn-lint template.yaml` exited 0 with no findings.
+  - `bash -n deploy.sh` exited 0; the template is 49,922 bytes.
+  - No `node_modules`, `dist`/`build` output, logs, scratch files, or test/dev
+    server processes were left in the repository.
+- No new endpoints or features were added. Invite links remain shared per role
+  rather than single-use, as instructed. `template.yaml` and `deploy.sh` bytes are
+  unchanged from the verified feature commit.
+- Remaining limitations: this machine has no AWS account/CLI and no Encompass
+  credentials. Real CloudFormation deployment, API Gateway key creation,
+  DynamoDB/SQS behavior, OAuth token exchange, loan reads/writes, and live
+  standard/custom schema responses remain unverified and BLOCKED.
+- This is the wrap-up docs change. A subsequent append-only note records the
+  wrap-up commit's CI and raw GitHub artifact verification.
