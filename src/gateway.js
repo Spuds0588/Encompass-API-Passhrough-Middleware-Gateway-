@@ -6,7 +6,7 @@
  * Handles both API Gateway proxy events (admin portal, field-filtered reads,
  * async write enqueue, job status) and SQS FIFO write events.
  *
- * Runtime: Node.js 20.x. No runtime dependencies beyond the AWS SDK v3 that
+ * Runtime: Node.js 24.x. No runtime dependencies beyond the AWS SDK v3 that
  * ships with the Lambda runtime, so it can be embedded as CloudFormation
  * inline code (ZipFile).
  */

@@ -111,7 +111,7 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 32 tests: handler unit/integration, HTTP e2e, template guards
+npm test          # 32 tests: handler unit/integration, HTTP e2e, template guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```

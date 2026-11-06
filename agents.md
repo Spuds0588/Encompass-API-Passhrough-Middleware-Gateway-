@@ -55,7 +55,8 @@ npm run dev       # local gateway at :3000 with fake Encompass
 
 ## Conventions
 
-- Node.js 20, CommonJS, no dependencies. The Lambda runtime supplies AWS SDK v3.
+- Node.js, CommonJS, no dependencies. The Lambda runtime (nodejs24.x) supplies AWS SDK v3.
+  Local tooling and tests run on Node 20+; CI covers 20 and 24.
 - `src/gateway.js` exports `handler` (lazy AWS store) and
   `createHandler({ store, env, fetchImpl, now })` for tests.
 - Storage interface: `getSecret`, `getTenant`, `putTenant`, `getToken`,
@@ -96,7 +97,7 @@ npm run dev       # local gateway at :3000 with fake Encompass
 
 ## Deployment and verification reality
 
-- The target is AWS: API Gateway REST + API key usage plan, Lambda (Node 20,
+- The target is AWS: API Gateway REST + API key usage plan, Lambda (Node 24,
   arm64), DynamoDB, SQS FIFO + DLQ, Secrets Manager, CloudFormation.
 - This development machine has no AWS CLI, SAM, Encompass credentials, or AWS
   account. `template.yaml` is therefore logically tested (resources, wiring,

@@ -22,7 +22,7 @@ test("template embeds the handler and has no leftover placeholder", () => {
   assert.match(template, /ZipFile: \|/);
   assert.ok(template.includes("exports.handler"));
   assert.ok(!template.includes("__GATEWAY_CODE__"));
-  assert.match(source, /Runtime: Node\.js 20\.x/);
+  assert.match(source, /Runtime: Node\.js 24\.x/);
 });
 
 test("template provisions the expected AWS resources", () => {

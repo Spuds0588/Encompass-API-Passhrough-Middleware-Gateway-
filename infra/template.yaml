@@ -162,7 +162,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-gateway"
       Description: Encompass passthrough gateway (portal, reads, async writes).
-      Runtime: nodejs20.x
+      Runtime: nodejs24.x
       Handler: index.handler
       Architectures:
         - arm64
