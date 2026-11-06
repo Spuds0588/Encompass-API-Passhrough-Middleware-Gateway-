@@ -475,3 +475,24 @@ a new dated entry.
 - No AWS or live Encompass validation is claimed: there is no AWS account, CLI,
   or Encompass tenant on this machine. Pending at this entry: commit, push,
   exact-SHA CI, Pages rebuild, and raw artifact checks.
+
+## 2026-11-06 — Broker document/condition production verification
+
+- Pushed feature commit `33f237d95c3c993193a33e406175a8d997f42328`
+  (`feat: add broker documents, uploads, and conditions`) to `main`.
+- CI run `42307486735` completed successfully on that exact SHA for Node 20 and
+  Node 24 (`verify (20)` and `verify (24)` both succeeded).
+- GitHub Pages rebuilt for the exact SHA; the latest build reported `built`
+  (created `2026-11-06T22:48:51Z`).
+- Raw `main` matched local bytes for `README.md` (22,225), `todo.md` (15,048),
+  `history.md` (31,282), `llms.txt` (8,588), and `template.yaml` (64,264).
+- The live page returned HTTP 200 with `text/html; charset=utf-8` and HSTS
+  `max-age=31556952`; live `index.html` was byte-identical at 27,312 bytes.
+- Not verified: an actual CloudFormation deployment (including `--s3-bucket`
+  upload and bucket creation), API Gateway key provisioning, and live Encompass
+  document/upload/condition behavior. The local fake proves contract shape and
+  routing only. The template-size path is proven locally by the 64,264-byte
+  artifact and the guarded `--s3-bucket` branch, not by an AWS run.
+- This verification entry is itself a docs-only follow-up commit; its own CI,
+  Pages, raw `history.md`/`todo.md`, clean-worktree, and cleanup checks are
+  reported in the delivery response.
