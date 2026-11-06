@@ -243,3 +243,28 @@ a new dated entry.
 - Pending at this entry: commit, push, CI run, GitHub Pages build, and raw GitHub
   artifact checks. Limitations remain: no live AWS or Encompass validation, and
   the page is static documentation, not a hosted runtime gateway.
+
+## 2026-11-06 — Community layer post-push verification
+
+- Pushed commit `a64461f` (`docs: add community support and project landing page`)
+  to `main`. GitHub Actions CI run `42299556782` completed successfully for Node 20
+  and Node 24.
+- GitHub Pages build `1347436024` completed with status `built`. The live page at
+  `https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/`
+  returned HTTP 200 with the expected title, and `llms.txt`, `robots.txt`, and
+  `sitemap.xml` all returned HTTP 200. The served `index.html` and `llms.txt` were
+  byte-identical to the committed files.
+- Raw `main` `template.yaml` and `deploy.sh` remained byte-identical to local:
+  template 49,922 bytes / sha256
+  `70ce427d33b4ef82e23dc64cd318716cda359819957dfbfd8cc0078db55f70dd`;
+  installer sha256
+  `55dedeea31b438cc157c8db053078d8e10bb3ece04a26e08b3194097b74aa84c`.
+  No handler, template, or installer bytes changed in the community layer.
+- Repository discoverability metadata set: homepage is the live project page,
+  description names the community-supported scope, and topics are `api-gateway`,
+  `aws-lambda`, `cloudformation`, `encompass`, `ice-mortgage`, `mortgage-tech`,
+  `open-source`, and `serverless`.
+- Invite links remain shared per role, not single-use, as instructed. Remaining
+  limitations are unchanged: no AWS account/CLI and no Encompass credentials here,
+  so real deployment, API Gateway key creation, DynamoDB/SQS behavior, OAuth, loan
+  calls, and live schema responses remain unverified and BLOCKED.

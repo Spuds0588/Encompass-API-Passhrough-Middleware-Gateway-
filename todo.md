@@ -92,7 +92,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] `robots.txt` and `sitemap.xml` for the GitHub Pages project page
 - [x] Shared-responsibility language in `README.md` and `agents.md`
 - [x] `test/static.test.js` guards for contribution links, metadata, schemas, and sitemap
-- [ ] Verify the GitHub Pages build and CI run for the community-support commit
+- [x] Verify the GitHub Pages build and CI run for the community-support commit (commit `a64461f`, CI run `42299556782` green on Node 20/24; Pages build `1347436024` succeeded; live index and `llms.txt` byte-identical)
 
 ## Deferred (YAGNI, not in MVP)
 
