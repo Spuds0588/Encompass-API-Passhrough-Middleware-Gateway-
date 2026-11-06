@@ -95,6 +95,57 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Cross-surface community-contract and agent-principle guards in the static suite
 - [x] Verify the GitHub Pages build and CI run for the community-support commit (commit `a64461f`, CI run `42299556782` green on Node 20/24; Pages build `1347436024` succeeded; live index and `llms.txt` byte-identical)
 
+## Phase 8 — Security, audit, compliance, and usability backlog (2026-11-06)
+
+Status: evaluation only. None of these items is implemented. Do not mark one done
+without the change, tests, and a matching `history.md` entry. These are ranked
+candidates, not permission to expand scope speculatively.
+
+### Ranked backlog (all unchecked)
+
+- [ ] **P0 — Correct the loan-data retention claim and bound queue retention.**
+  Replace “No loan data is ever stored” with an accurate statement: no loan
+  database or mirror; write payloads transit SQS. Shorten write-queue and DLQ
+  retention, enable explicit SQS encryption, add a DLQ alarm/purge procedure, and
+  document the full data inventory (tenant email, jobs, tokens, SQS, CloudWatch).
+- [ ] **P0 — Make Encompass persona least privilege an explicit control and
+  enforce tenant status.** Require field/loan-scoped service accounts, validate
+  at least one restricted persona, and document that `fields` is projection, not
+  authorization. Make `tenantFor` reject non-ACTIVE tenants; if Encompass cannot
+  scope fields, add a per-role allowlist and include tenant/role in cache keys.
+- [ ] **P1 — Protect portal key minting and define key/invite lifecycle.** Add a
+  stage method throttle for `POST /portal`; document API Gateway key disable and
+  invite rotation; add a `SECURITY.md` with private vulnerability reporting. Keep
+  invites shared per role; do not make them single-use. Make provisioning
+  idempotent and clean up orphan keys on partial failure.
+- [ ] **P1 — Add end-to-end request-ID correlation.** Propagate the API Gateway
+  request ID through every operation, log entry, response header, and job record.
+  Add metadata-only access logs if the template budget permits; add Lambda error,
+  API 5xx, and DLQ alarms. Never enable full request/response body logging.
+- [ ] **P1 — Harden `deploy.sh` against supply-chain and secret exposure.** Pin a
+  release tag or commit and verify SHA-256; use TLS-constrained curl; avoid
+  passing the client secret through CLI process arguments where a pre-created
+  secret ARN is practical. Add `cfn-lint` and an IaC security scan to CI.
+- [ ] **P2 — Add input and capacity limits.** Cap request body, field-value,
+  and loan-ID sizes; validate `Content-Type`; add `413`/`415` responses and
+  `Retry-After` guidance. Document that usage-plan limits are not per-tenant
+  aggregates, and consider reserved concurrency or a conservative stage throttle.
+- [ ] **P2 — Add compliance and operations documentation.** Document data
+  inventory/retention, deletion and tenant offboarding, key/invite compromise,
+  incident response, access review, and the deployment's shared-responsibility
+  boundary. This supports lender GLBA/SOC 2 programs; it does not certify them.
+- [ ] **P2 — Add optional usability surfaces.** Add a static OpenAPI spec for
+  vendor integration. Add a custom domain/HSTS only if a lender requires it;
+  these are not MVP requirements.
+
+### Template distribution decision (unchecked)
+
+- [ ] **Decide before adding large controls.** `template.yaml` uses **49,922 of
+  51,200 bytes**, leaving **1,278 bytes**. Small code/template changes can fit,
+  but WAF, API Gateway access logging, and a full alarm set may require an
+  S3-hosted template or a separate hardening stack. Make that a deliberate
+  product/distribution decision, not an accidental limit breach.
+
 ## Deferred (YAGNI, not in MVP)
 
 - [ ] Loan mirror / sync engine — explicitly rejected in the dev doc
@@ -103,6 +154,27 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [ ] Invite-code rotation UI or single-use vendor invites (stack parameter update only)
 - [ ] CORS support — vendors are expected to call server-to-server
 - [ ] Per-tenant quota overrides (single shared usage plan for MVP)
+
+### Explicitly not recommended
+
+Do not re-propose these without a new user or lender requirement recorded in
+`todo.md` first.
+
+- [ ] Single-use vendor invites or an invite-rotation UI — keep shared per-role
+  links; rotate by updating stack parameters.
+- [ ] Admin dashboard or tenant CRUD UI — adds authentication and state; use the
+  documented AWS CLI runbook instead.
+- [ ] Loan mirror, sync engine, write webhooks, or debouncing — violates the
+  passthrough/stateless scope.
+- [ ] CORS — vendors are server-to-server; keep the browser surface closed.
+- [ ] Separate audit database, SIEM, or external log pipeline — CloudWatch plus
+  job metadata is sufficient for the MVP.
+- [ ] API Gateway full request/response logging — risks keys, invite codes, and
+  loan data; access logs must be metadata-only.
+- [ ] mTLS, custom domain/HSTS, or per-tenant usage plans without a lender
+  requirement — cost and operational complexity are not justified speculatively.
+- [ ] WAF managed rule sets without a concrete abuse pattern — use targeted
+  method throttling and rate limiting first.
 
 ## Next action
 

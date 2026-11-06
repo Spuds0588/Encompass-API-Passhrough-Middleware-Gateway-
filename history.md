@@ -328,3 +328,28 @@ a new dated entry.
 - Post-push checks (exact-commit CI, Pages build, live asset bytes, raw README,
   clean worktree, and cleanup) are reported in the delivery response. Remaining
   limitation: no live AWS or Encompass validation is possible from this machine.
+
+## 2026-11-06 — Security, audit, compliance, and usability evaluation (backlog only)
+
+- Reviewed `src/gateway.js`, `infra/template.yaml`, `deploy.sh`, CI, tests, and the
+  public docs. No runtime, infrastructure, template, deploy, or test fixes were
+  implemented in this pass.
+- Verdict: the lean passthrough design is coherent and locally tested, but it is
+  not yet audit-ready for real borrower data. Key gap classes: the “no loan data
+  stored” claim versus SQS write-payload retention; persona-only authorization
+  and no field allowlist; static invite/key lifecycle and unthrottled key
+  minting; incomplete request-ID, access-log, and alarm coverage; deploy secret
+  and supply-chain exposure; missing input caps and compliance runbooks.
+- Template budget finding: `template.yaml` uses **49,922 of 51,200 bytes**,
+  leaving **1,278 bytes**. API access logging, WAF, and a full alarm set may
+  require a deliberate S3-hosted template or separate hardening stack; they must
+  not silently breach the direct-upload limit.
+- Added the ranked, unchecked backlog and the explicit not-recommended list to
+  `todo.md` Phase 8. The backlog is evaluation only; none of it was implemented.
+- Re-checked `agents.md`: the YAGNI/no-speculation rule, shortest-working/one-line
+  preference, and dev-environment cleanup requirements are present and enforced
+  by the static test suite. No edit was needed there.
+- Remaining limitations are unchanged: no AWS account/CLI and no Encompass
+  credentials here, so live deployment, API Gateway key creation, DynamoDB/SQS
+  behavior, OAuth, loan calls, and live schema responses remain unverified and
+  BLOCKED. GitHub Pages remains the only deployed production surface.
