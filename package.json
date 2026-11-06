@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "node scripts/build.js",
-    "test": "node --test test/",
+    "test": "node --test",
     "verify": "node scripts/build.js --check && node --test test/",
     "dev": "node dev/server.js"
   }
