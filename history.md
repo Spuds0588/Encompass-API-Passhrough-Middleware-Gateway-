@@ -291,3 +291,27 @@ a new dated entry.
 - Pending at this entry: commit, push, exact-commit CI, GitHub Pages build, raw
   `main` document checks, and cleanup. Limitations remain: no live AWS or Encompass
   verification is possible from this machine.
+
+## 2026-11-06 — Community contract post-push verification
+
+- Pushed contract-enforcement commit `55ecda7ec3de13b64c9a092ee2a992bd320c0799`.
+  CI run `42300329582` completed successfully at that exact SHA on Node 20 and 24.
+- GitHub Pages build status is `built` (updated `2026-11-06T21:53:37Z`). The live
+  page and `llms.txt`, `robots.txt`, and `sitemap.xml` all returned HTTP 200 and
+  were byte-identical to the local files.
+- Raw `main` for `agents.md`, `README.md`, `CONTRIBUTING.md`, `llms.txt`,
+  `index.html`, `test/static.test.js`, `todo.md`, `history.md`, `template.yaml`,
+  and `deploy.sh` matched local bytes. Three raw URLs initially served stale
+  `max-age=300` edge copies; the Git content API and commit-pinned raw URLs already
+  had the new objects, and the canonical raw URLs refreshed to the same bytes.
+- No handler, endpoint, template, or installer changes were made. `template.yaml`
+  remains 49,922 bytes with SHA-256
+  `70ce427d33b4ef82e23dc64cd318716cda359819957dfbfd8cc0078db55f70dd`;
+  `deploy.sh` remains SHA-256
+  `55dedeea31b438cc157c8db053078d8e10bb3ece04a26e08b3194097b74aa84c`.
+- This history-only follow-up commit is checked after push for exact-commit CI,
+  Pages build status, raw bytes, a clean worktree, and removal of temporary files
+  and dev processes. Remaining limitation: no AWS account/CLI or Encompass
+  credentials exist here, so live deployment, API Gateway key creation,
+  DynamoDB/SQS behavior, OAuth, loan calls, and live schema responses are still
+  unverified and BLOCKED.
