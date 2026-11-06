@@ -3,6 +3,55 @@
 Stateless AWS middleware that gives third-party vendors a small, stable API in
 front of ICE Encompass. No loan data is ever stored.
 
+## Deploy (AWS CloudShell, ~3 minutes)
+
+```bash
+bash <(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)
+```
+
+The script verifies your AWS session, asks for the Encompass instance ID, client
+ID, and client secret, generates three role invite codes, fetches the committed
+template, and deploys `Encompass-API-Gateway` with `CAPABILITY_IAM`.
+
+It prints:
+
+- `GatewayUrl` — base URL for vendor calls
+- `AdminPortalUrl` — the invite portal (the output keeps its original name)
+- `HealthUrl`
+- `FieldsUrl`
+- three ready-to-share role links, for example
+  `...?role=title&code=...`, plus the persona each role uses
+
+The invite codes are bearer secrets. The script prints each one once; save them
+and pass the same values back through the environment on stack updates so
+existing links keep working.
+
+Environment overrides: `STACK_NAME`, `AWS_REGION`, `ENCOMPASS_INSTANCE`,
+`ENCOMPASS_CLIENT_ID`, `ENCOMPASS_CLIENT_SECRET`, `TITLE_INVITE_CODE`,
+`BROKER_INVITE_CODE`, `APPRAISAL_INVITE_CODE`, `TITLE_PERSONA`,
+`BROKER_PERSONA`, `APPRAISAL_PERSONA`, `TEMPLATE_URL`.
+
+Prefer the console? Upload `template.yaml` directly in CloudFormation
+("Upload a template file") and fill in the same parameters. It is under the
+51,200-byte direct-upload limit.
+
+### Smoke test after deploy
+
+```bash
+curl -s "$HEALTH_URL"
+curl -s "$PORTAL_URL?role=title&code=$TITLE_INVITE_CODE"
+curl -s -X POST "$PORTAL_URL" -H "content-type: application/json" \
+  -d "{\"role\":\"title\",\"code\":\"$TITLE_INVITE_CODE\",\"tenantName\":\"Acme Title\",\"email\":\"dev@acme.test\"}"
+# use the returned apiKey:
+curl -s "$GATEWAY_URL/v1/fields?ids=11,646,CX.TITLE.STATUS" -H "x-api-key: $KEY"
+curl -s "$GATEWAY_URL/v1/loans/LOAN_GUID?fields=11,12,1109" -H "x-api-key: $KEY"
+curl -s -X PATCH "$GATEWAY_URL/v1/loans/LOAN_GUID" -H "x-api-key: $KEY" \
+  -H "content-type: application/json" -d '{"fields":{"1109":525000}}'
+curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
+```
+
+## Features
+
 - **Field-filtered reads** — `GET /v1/loans/{id}?fields=11,12,1109` returns only
   what the vendor asked for, with a 30-second per-container projection cache.
 - **Async writes** — `PATCH /v1/loans/{id}` validates and enqueues to SQS FIFO
@@ -97,53 +146,6 @@ curl -s -X PATCH "$GATEWAY_URL/v1/loans/LOAN_GUID" \
 
 The persona comes from the role parameter, never from the request body, so a
 vendor holding one invite link cannot mint a key for another role.
-
-## Deploy (AWS CloudShell, ~3 minutes)
-
-```bash
-bash <(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)
-```
-
-The script verifies your AWS session, asks for the Encompass instance ID, client
-ID, and client secret, generates three role invite codes, fetches the committed
-template, and deploys `Encompass-API-Gateway` with `CAPABILITY_IAM`.
-
-It prints:
-
-- `GatewayUrl` — base URL for vendor calls
-- `AdminPortalUrl` — the invite portal (the output keeps its original name)
-- `HealthUrl`
-- `FieldsUrl`
-- three ready-to-share role links, for example
-  `...?role=title&code=...`, plus the persona each role uses
-
-The invite codes are bearer secrets. The script prints each one once; save them
-and pass the same values back through the environment on stack updates so
-existing links keep working.
-
-Environment overrides: `STACK_NAME`, `AWS_REGION`, `ENCOMPASS_INSTANCE`,
-`ENCOMPASS_CLIENT_ID`, `ENCOMPASS_CLIENT_SECRET`, `TITLE_INVITE_CODE`,
-`BROKER_INVITE_CODE`, `APPRAISAL_INVITE_CODE`, `TITLE_PERSONA`,
-`BROKER_PERSONA`, `APPRAISAL_PERSONA`, `TEMPLATE_URL`.
-
-Prefer the console? Upload `template.yaml` directly in CloudFormation
-("Upload a template file") and fill in the same parameters. It is under the
-51,200-byte direct-upload limit.
-
-### Smoke test after deploy
-
-```bash
-curl -s "$HEALTH_URL"
-curl -s "$PORTAL_URL?role=title&code=$TITLE_INVITE_CODE"
-curl -s -X POST "$PORTAL_URL" -H "content-type: application/json" \
-  -d "{\"role\":\"title\",\"code\":\"$TITLE_INVITE_CODE\",\"tenantName\":\"Acme Title\",\"email\":\"dev@acme.test\"}"
-# use the returned apiKey:
-curl -s "$GATEWAY_URL/v1/fields?ids=11,646,CX.TITLE.STATUS" -H "x-api-key: $KEY"
-curl -s "$GATEWAY_URL/v1/loans/LOAN_GUID?fields=11,12,1109" -H "x-api-key: $KEY"
-curl -s -X PATCH "$GATEWAY_URL/v1/loans/LOAN_GUID" -H "x-api-key: $KEY" \
-  -H "content-type: application/json" -d '{"fields":{"1109":525000}}'
-curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
-```
 
 ## Local development
 

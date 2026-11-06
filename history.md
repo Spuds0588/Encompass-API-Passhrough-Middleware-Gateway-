@@ -315,3 +315,16 @@ a new dated entry.
   credentials exist here, so live deployment, API Gateway key creation,
   DynamoDB/SQS behavior, OAuth, loan calls, and live schema responses are still
   unverified and BLOCKED.
+
+## 2026-11-06 — README deployment quickstart moved to top
+
+- Moved the AWS CloudShell deployment instructions and post-deploy smoke test
+  directly below the project summary, ahead of features, community guidance,
+  architecture, API reference, and local development.
+- Added a `## Features` heading for the relocated capability list. The deployment
+  text and the community-support contract are otherwise unchanged.
+- Verification before push: `npm run verify` passed 47/47. No code, endpoint,
+  template, or installer changes.
+- Post-push checks (exact-commit CI, Pages build, live asset bytes, raw README,
+  clean worktree, and cleanup) are reported in the delivery response. Remaining
+  limitation: no live AWS or Encompass validation is possible from this machine.
