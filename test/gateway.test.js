@@ -327,6 +327,11 @@ test("inactive tenants are denied across authenticated routes", async () => {
       path: "/v1/loans/loan-1/attachmentUploadUrl",
       body: { file: { name: "a.pdf", contentType: "application/pdf", size: 1 } },
     }),
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/attachmentDownloadUrl",
+      body: { attachments: ["attachment-1"] },
+    }),
   ]) {
     assert.equal((await handler(request)).statusCode, 403);
   }
@@ -524,6 +529,71 @@ test("attachment upload validates the file and assignment", async () => {
   );
   assert.equal(unknownDocument.statusCode, 404);
   assert.equal(fake.state.uploadInitiations, 0);
+});
+
+test("attachment download initiation returns Encompass download URLs", async () => {
+  const response = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/attachmentDownloadUrl",
+      body: { attachments: ["attachment-1"] },
+    }),
+  );
+  assert.equal(response.statusCode, 200);
+
+  const body = parse(response);
+  assert.equal(body.loanId, "loan-1");
+  assert.equal(body.downloads.length, 1);
+  assert.equal(body.downloads[0].id, "attachment-1");
+  assert.match(body.downloads[0].url, /\/download\//);
+  assert.equal(body.downloads[0].authorizationHeader, "download-auth-attachment-1");
+  assert.equal(fake.state.downloadInitiations, 1);
+});
+
+test("pre-signed download returns the attachment bytes", async () => {
+  const initiated = parse(
+    await handler(
+      httpEvent({
+        method: "POST",
+        path: "/v1/loans/loan-1/attachmentDownloadUrl",
+        body: { attachments: ["attachment-1"] },
+      }),
+    ),
+  );
+  const target = initiated.downloads[0];
+
+  const downloaded = await fetch(target.url, { headers: { Authorization: target.authorizationHeader } });
+  assert.equal(downloaded.status, 200);
+  assert.equal(await downloaded.text(), "credit-report.pdf-content");
+  assert.equal(fake.state.downloadGets, 1);
+
+  const denied = await fetch(target.url, { headers: { Authorization: "wrong" } });
+  assert.equal(denied.status, 401);
+});
+
+test("attachment download validates ids and maps unknown attachments", async () => {
+  const invalid = [
+    {},
+    { attachments: [] },
+    { attachments: ["bad id!"] },
+    { attachments: Array.from({ length: 21 }, () => "attachment-1") },
+  ];
+  for (const body of invalid) {
+    const response = await handler(
+      httpEvent({ method: "POST", path: "/v1/loans/loan-1/attachmentDownloadUrl", body }),
+    );
+    assert.equal(response.statusCode, 400, JSON.stringify(body));
+  }
+
+  const missing = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/attachmentDownloadUrl",
+      body: { attachments: ["attachment-missing"] },
+    }),
+  );
+  assert.equal(missing.statusCode, 404);
+  assert.equal(fake.state.downloadInitiations, 0);
 });
 
 test("GET conditions returns enhanced conditions for the tenant", async () => {

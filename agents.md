@@ -5,9 +5,12 @@
 A lean, stateless Encompass passthrough gateway that runs in the lender's AWS account:
 field-filtered synchronous reads, asynchronous FIFO writes with retries, a
 role-scoped self-serve onboarding portal, field schema discovery, eFolder
-document listing, pre-signed attachment upload initiation, and enhanced-condition
+document listing, pre-signed attachment upload and download, and enhanced-condition
 read/respond. It must keep no loan database or mirror; write payloads transit SQS
 and read projections live in Lambda memory for up to 30 seconds.
+
+Top priority (2026-11-06): the loan-file document and condition workflow
+(list, upload, download, read/respond) outranks all other backlog work.
 
 Source of truth for scope: `README.md`, `todo.md`, and `llms.txt`. The original
 exported AI Studio chat was removed because it is no longer maintained.
@@ -67,7 +70,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 | `template.yaml` | Generated, committed deployable template. Never edit by hand. |
 | `scripts/build.js` | Inlines the handler into the template, enforces the 1,000,000-byte S3-hosted limit, supports `--check`. |
 | `deploy.sh` | One-line AWS CloudShell deployment; fetches the committed template, uses `--s3-bucket` above 51,200 bytes, and deploys the stack. |
-| `dev/fake-encompass.js` | Local fake OAuth + loans + schema + eFolder documents + pre-signed uploads + enhanced conditions, including 423 lock simulation. |
+| `dev/fake-encompass.js` | Local fake OAuth + loans + schema + eFolder documents + pre-signed uploads/downloads + enhanced conditions, including 423 lock simulation. |
 | `dev/memory-store.js` | In-memory storage/queue adapter for local runs. Never deployed. |
 | `dev/server.js` | Local API Gateway + SQS emulator around the real handler. |
 | `test/*.test.js` | Unit, end-to-end HTTP, template, and static-page tests (Node built-in runner). |
@@ -81,7 +84,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 63 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 66 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -115,10 +118,15 @@ npm run dev       # local gateway at :3000 with fake Encompass
   (`entityId`, `entityType: Document`) fields. Return Encompass's
   `CreateAttachmentResponse` unchanged; file bytes go to its pre-signed `url`,
   never through the gateway, and `authorizationHeader` is never logged.
+- Downloads use `POST /v1/loans/{id}/attachmentDownloadUrl` with the official
+  `{ attachments: [id] }` body (1–20 ids) and return Encompass's download array
+  unchanged inside `{ loanId, downloads }`. Each entry's `url` and
+  `authorizationHeader` are short-lived credentials; never log or cache them.
 - Conditions use native V3 `/conditions`; PATCH sends `?action=update` with an
   array of `{ id, ... }`. Only enhanced conditions are proxied; `status`,
   `statusDate`, and `statusOpen` are retrieve-only and must not be written.
-- Document, upload, and condition responses are `no-store` and are never cached.
+- Document, upload, download, and condition responses are `no-store` and are
+  never cached.
 - Tests must not require AWS or Encompass. Use the dev fakes and close every
   server in `afterEach`/`finally` so the test process exits.
 
@@ -144,15 +152,16 @@ npm run dev       # local gateway at :3000 with fake Encompass
   `WRITE_FIELDS_APPRAISAL` allowlists are enforced before enqueue; unset means no
   restriction, malformed fails closed. They are a guardrail, not a substitute
   for Encompass persona permissions.
-- Upload URLs and `authorizationHeader` values are short-lived credentials. Pass
-  them through without logging or caching.
+- Upload/download URLs and their `authorizationHeader` values are short-lived
+  credentials. Pass them through without logging or caching.
 - Gateway IAM is scoped to the three tables, two queues, one secret, and only
   `apigateway:POST` for key provisioning.
 
 ## Workflow
 
 1. Read `todo.md`; pick the next unchecked item.
-2. Make the smallest change that completes it, with a test.
+2. Follow `todo.md` priority order: document/condition work first, then P1/P2.
+   Make the smallest change that completes the item, with a test.
 3. `npm run build` if `src/gateway.js` or `infra/template.yaml` changed.
 4. `npm run verify`; fix causes, never weaken assertions.
 5. Update `todo.md` (tick it) and append to `history.md` (what changed, evidence).
@@ -175,7 +184,7 @@ npm run dev       # local gateway at :3000 with fake Encompass
   (`.github/workflows/ci.yml`) and by fetching the raw `template.yaml` from
   GitHub, which is exactly what `deploy.sh` downloads.
 - `scripts/build.js` compacts the inlined deploy copy and enforces 1,000,000
-  bytes. The template is about 64 KB, above CloudFormation's 51,200-byte direct
+  bytes. The template is about 66 KB, above CloudFormation's 51,200-byte direct
   limit, so `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket`
   (S3-hosted limit: 1 MB). Keep the source formatted; do not hand-edit
   `template.yaml`.

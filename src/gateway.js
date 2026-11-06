@@ -23,6 +23,7 @@ const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
 const FIELD_ID = /^[A-Za-z0-9._]+$/;
 const CONDITION_ID = /^[A-Za-z0-9._:-]+$/;
 const MAX_CONDITION_UPDATES = 20;
+const MAX_DOWNLOAD_IDS = 20;
 const MAX_BODY_BYTES = 10_000;
 const DOCUMENT_QUERY_KEYS = ["requireActiveAttachments", "includeRemoved", "view", "start", "limit"];
 const CONDITION_QUERY_KEYS = ["conditionType", "includeRemoved", "view", "start", "limit"];
@@ -586,6 +587,42 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     return json(200, result.body);
   }
 
+  async function downloadAttachmentUrls(event, apiKeyId, loanId) {
+    const body = String(event.body || "");
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) return error(413, "Request body too large");
+
+    let payload;
+    try {
+      payload = JSON.parse(body || "null");
+    } catch {
+      return error(400, "Invalid JSON body");
+    }
+    const attachments = payload && Array.isArray(payload.attachments) ? payload.attachments : null;
+    if (!attachments || attachments.length === 0 || attachments.length > MAX_DOWNLOAD_IDS) {
+      return error(400, `Body must contain attachments: an array of 1-${MAX_DOWNLOAD_IDS} attachment ids`);
+    }
+    if (
+      attachments.some(
+        (id) => typeof id !== "string" || id.length === 0 || id.length > 200 || !CONDITION_ID.test(id),
+      )
+    ) {
+      return error(400, "Each attachment id must be a valid string");
+    }
+
+    const scoped = await callForLoan(event, apiKeyId, loanId, "ATTACHMENT_DOWNLOAD_URLS", {
+      path: "/attachmentDownloadUrl",
+      method: "POST",
+      body: { attachments },
+    });
+    if (scoped.response) return scoped.response;
+    const { result } = scoped;
+    if (!result.response.ok) return upstreamFailure(result);
+    if (!Array.isArray(result.body)) return error(502, "Invalid Encompass response");
+
+    log("INFO", "ATTACHMENT_DOWNLOAD_URLS_CREATED", { loanId, count: result.body.length });
+    return json(200, { loanId, downloads: result.body });
+  }
+
   async function listConditions(event, apiKeyId, loanId) {
     const query = pickQuery(event.queryStringParameters, CONDITION_QUERY_KEYS);
     if (!query) return error(400, "Invalid conditions query");
@@ -793,13 +830,14 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       }
 
       let match;
-      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/(documents|conditions|attachmentUploadUrl)$/))) {
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/(documents|conditions|attachmentUploadUrl|attachmentDownloadUrl)$/))) {
         const loanId = decode(match[1]);
         const resource = match[2];
         if (resource === "documents" && method === "GET") return await listDocuments(event, apiKeyId, loanId);
         if (resource === "conditions" && method === "GET") return await listConditions(event, apiKeyId, loanId);
         if (resource === "conditions" && method === "PATCH") return await updateConditions(event, apiKeyId, loanId);
         if (resource === "attachmentUploadUrl" && method === "POST") return await initiateAttachmentUpload(event, apiKeyId, loanId);
+        if (resource === "attachmentDownloadUrl" && method === "POST") return await downloadAttachmentUrls(event, apiKeyId, loanId);
         return error(405, "Method not allowed");
       }
       if ((match = path.match(/^\/v1\/loans\/([^/]+)$/))) {
@@ -971,6 +1009,7 @@ function renderPortal({ role, error } = {}) {
           'PATCH  ' + base + '/v1/loans/{loanId}',
           'GET    ' + base + '/v1/loans/{loanId}/documents',
           'POST   ' + base + '/v1/loans/{loanId}/attachmentUploadUrl',
+          'POST   ' + base + '/v1/loans/{loanId}/attachmentDownloadUrl',
           'GET    ' + base + '/v1/loans/{loanId}/conditions',
           'PATCH  ' + base + '/v1/loans/{loanId}/conditions',
           'GET    ' + base + '/v1/jobs/{jobId}',

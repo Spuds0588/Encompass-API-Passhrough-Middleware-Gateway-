@@ -106,8 +106,16 @@ test("per-role write allowlists are wired into the Lambda environment", () => {
   }
 });
 
-test("embedded handler includes documents, attachment upload, and conditions", () => {
-  for (const route of ["/documents", "/attachmentUploadUrl", "/conditions", "CONDITIONS_UPDATED", "ATTACHMENT_UPLOAD_INITIATED"]) {
+test("embedded handler includes documents, attachment upload/download, and conditions", () => {
+  for (const route of [
+    "/documents",
+    "/attachmentUploadUrl",
+    "/attachmentDownloadUrl",
+    "/conditions",
+    "CONDITIONS_UPDATED",
+    "ATTACHMENT_UPLOAD_INITIATED",
+    "ATTACHMENT_DOWNLOAD_URLS_CREATED",
+  ]) {
     assert.ok(template.includes(route), `missing ${route}`);
   }
 });

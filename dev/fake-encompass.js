@@ -119,12 +119,16 @@ function startFakeEncompass({
     uploadInitiations: 0,
     uploadPuts: 0,
     uploadedBytes: 0,
+    downloadInitiations: 0,
+    downloadGets: 0,
+    downloadedBytes: 0,
     tokens: new Set(),
     loans: new Map(Object.entries(loans).map(([id, loan]) => [id, { ...loan, id }])),
     lockRemaining: new Map(Object.entries(lockAttempts)),
     documents: new Map(),
     conditions: new Map(),
     uploads: new Map(),
+    contents: new Map(),
   };
   if (state.loans.size === 0) state.loans.set(DEFAULT_LOAN.id, { ...DEFAULT_LOAN });
 
@@ -134,6 +138,17 @@ function startFakeEncompass({
   for (const [loanId, items] of Object.entries(conditions)) {
     if (state.loans.has(loanId)) state.conditions.set(loanId, JSON.parse(JSON.stringify(items)));
   }
+  for (const [loanId, docs] of state.documents) {
+    for (const doc of docs) {
+      for (const attachment of doc.attachments || []) {
+        state.contents.set(attachment.id, {
+          loanId,
+          content: Buffer.from(`${attachment.fileName}-content`),
+          contentType: attachment.contentType,
+        });
+      }
+    }
+  }
 
   const send = (res, status, body) => {
     res.writeHead(status, { "Content-Type": "application/json" });
@@ -141,6 +156,11 @@ function startFakeEncompass({
   };
 
   const authorized = (req) => state.tokens.has(String(req.headers.authorization || "").replace(/^Bearer /, ""));
+
+  const findAttachment = (loanId, attachmentId) =>
+    (state.documents.get(loanId) || [])
+      .flatMap((doc) => doc.attachments || [])
+      .find((attachment) => attachment.id === attachmentId) || null;
 
   const schemaEntries = (url, custom) => {
     const ids = String(url.searchParams.get("ids") || "").split(",").filter(Boolean);
@@ -193,7 +213,30 @@ function startFakeEncompass({
         dateAdded: timestamp(),
       });
       pending.uploaded = true;
+      state.contents.set(attachmentId, {
+        loanId: pending.loanId,
+        content: Buffer.from(raw),
+        contentType: pending.file.contentType,
+      });
       return send(res, 200, {});
+    }
+
+    // Pre-signed GET target, authenticated by the download authorization header.
+    const downloadMatch = url.pathname.match(/^\/download\/([^/]+)$/);
+    if (downloadMatch && req.method === "GET") {
+      const attachmentId = decodeURIComponent(downloadMatch[1]);
+      const entry = state.contents.get(attachmentId);
+      if (!entry) return send(res, 404, { error: "attachment_not_found" });
+      if (req.headers.authorization !== `download-auth-${attachmentId}`) {
+        return send(res, 401, { error: "invalid_download_authorization" });
+      }
+      state.downloadGets += 1;
+      state.downloadedBytes += entry.content.length;
+      res.writeHead(200, {
+        "Content-Type": entry.contentType || "application/octet-stream",
+        "Content-Length": entry.content.length,
+      });
+      return res.end(entry.content);
     }
 
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
@@ -282,6 +325,34 @@ function startFakeEncompass({
       }
 
       return send(res, 405, { error: "method_not_allowed" });
+    }
+
+    const downloadUrlMatch = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)\/attachmentDownloadUrl$/);
+    if (downloadUrlMatch && req.method === "POST") {
+      const loanId = decodeURIComponent(downloadUrlMatch[1]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return send(res, 400, { error: "invalid_json" });
+      }
+      const ids = payload && Array.isArray(payload.attachments) ? payload.attachments : null;
+      if (!ids || ids.length === 0) return send(res, 400, { error: "attachments_required" });
+      const downloads = [];
+      for (const id of ids) {
+        const attachment = findAttachment(loanId, id);
+        if (!attachment || !state.contents.has(id)) return send(res, 404, { error: "attachment_not_found" });
+        downloads.push({
+          id,
+          url: `http://${req.headers.host}/download/${encodeURIComponent(id)}`,
+          authorizationHeader: `download-auth-${id}`,
+          contentType: attachment.contentType,
+          type: "Cloud",
+        });
+      }
+      state.downloadInitiations += 1;
+      return send(res, 200, downloads);
     }
 
     const uploadMatchV3 = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)\/attachmentUploadUrl$/);

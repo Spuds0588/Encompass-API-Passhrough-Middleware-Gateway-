@@ -172,6 +172,21 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     assert.equal(target.attachments.length, 1);
     assert.equal(target.attachments[0].fileName, "closing-statement.pdf");
 
+    const download = await request(`${gateway.url}/v1/loans/loan-1/attachmentDownloadUrl`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": apiKey },
+      body: JSON.stringify({ attachments: [upload.body.attachmentId] }),
+    });
+    assert.equal(download.status, 200);
+    assert.equal(download.body.downloads.length, 1);
+
+    const downloaded = await request(download.body.downloads[0].url, {
+      headers: { authorization: download.body.downloads[0].authorizationHeader },
+    });
+    assert.equal(downloaded.status, 200);
+    assert.equal(downloaded.body, "upload-body");
+    assert.equal(fake.state.downloadedBytes, 11);
+
     const conditions = await request(`${gateway.url}/v1/loans/loan-1/conditions`, {
       headers: { "x-api-key": apiKey },
     });

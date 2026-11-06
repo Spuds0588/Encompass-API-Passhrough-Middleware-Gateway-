@@ -496,3 +496,29 @@ a new dated entry.
 - This verification entry is itself a docs-only follow-up commit; its own CI,
   Pages, raw `history.md`/`todo.md`, clean-worktree, and cleanup checks are
   reported in the delivery response.
+
+## 2026-11-06 — Attachment download and top-priority broker workflow
+
+- Reprioritized the backlog on user direction: loan-file document listing,
+  upload, download, and condition read/respond are the primary use case and now
+  sit at the top of `todo.md`, above all P1/P2 and deferred work.
+- Verified the official V3 download contract from Developer Connect and the
+  published Postman collection. `POST
+  /encompass/v3/loans/{loanId}/attachmentDownloadUrl` takes
+  `{"attachments":["ATTACHMENT_ID"]}` (the official Postman example) and
+  returns an array of `{ id, url, authorizationHeader?, contentType?, ... }`.
+  The caller GETs `url` with `Authorization: <authorizationHeader>` when present.
+- Added `POST /v1/loans/{id}/attachmentDownloadUrl` with tenant/persona auth, a
+  10 KB body cap, 1–20 attachment ids, strict id validation, and the normal
+  upstream error mapping. The response is `{ loanId, downloads: [...] }` with
+  the upstream download objects unchanged.
+- Extended the fake with stored attachment bytes and a pre-signed
+  `GET /download/{id}` target that requires the returned authorization header.
+  Tests cover initiation, a real byte download, wrong-header rejection,
+  validation, inactive tenants, and an e2e upload → download round trip. 66/66
+  tests pass; the template is 66,120 bytes.
+- Updated `README.md`, `agents.md`, `llms.txt`, `index.html`, the portal endpoint
+  list, `todo.md`, and this history. AWS deployment and live Encompass behavior
+  remain unverified.
+- This entry was written before the push; exact-SHA CI, Pages, raw bytes, and the
+  clean-worktree check are reported in the delivery response.

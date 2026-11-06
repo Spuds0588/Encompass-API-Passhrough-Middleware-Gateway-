@@ -2,6 +2,18 @@
 
 Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass access.
 
+## Priority order (2026-11-06)
+
+**Top priority: loan-file documents and conditions.** Listing, uploading,
+downloading, reading, and responding to documents/conditions is the primary
+broker use case and outranks every P1/P2 and deferred item below.
+
+- [x] eFolder document listing
+- [x] Pre-signed attachment upload initiation
+- [x] Pre-signed attachment download URLs and byte downloads
+- [x] Enhanced-condition read/respond
+- [ ] BLOCKED: live-tenant verification of the V3 document/upload/download/condition contracts
+
 ## Phase 1 — Core infrastructure & distribution
 
 - [x] Single-file CloudFormation template (`infra/template.yaml` → generated `template.yaml`)
@@ -14,7 +26,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Scoped IAM role (no wildcard resources for data access)
 - [x] `deploy.sh` one-line CloudShell installer with outputs (superseded: now generates three role invite codes instead of an admin token)
 - [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (50,376 bytes after 2026-11-06 field/writeability work)
-- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 64,012 bytes)
+- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 66,120 bytes)
 
 ## Phase 2 — Token management & impersonation
 
@@ -75,7 +87,7 @@ Legend: `[x]` done and verified · `[ ]` open · `BLOCKED` needs AWS/Encompass a
 - [x] Production-shaped HTTP e2e: portal invite → key → fields → read → enqueue → worker → job → retry
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, invite parameters, native schema paths, size, in-sync
 - [x] 50/50 tests passing locally (`npm run verify`)
-- [x] 63/63 tests passing locally after Phase 9 (`npm run verify`; template 64,012 bytes, S3-hosted delivery)
+- [x] 66/66 tests passing locally after attachment download (`npm run verify`; template 66,120 bytes, S3-hosted delivery)
 - [x] Field writeability/retention hardening verified at commit `83f0057` (CI run `42305287711` green on Node 20/24; Pages `built`; live index, docs, and template bytes verified)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
 - [x] `cfn-lint` clean on the final template (exit 0)
@@ -151,7 +163,7 @@ speculatively.
 ### Template distribution decision (decided 2026-11-06)
 
 - [x] **Decided: keep one self-contained template and host it through S3 when
-  needed.** `template.yaml` is now **64,012 bytes**, over the 51,200-byte direct
+  needed.** `template.yaml` is now **66,120 bytes**, over the 51,200-byte direct
   limit. `deploy.sh` auto-creates/reuses an artifact bucket and passes
   `--s3-bucket` (S3-hosted limit 1 MB); the build enforces 1,000,000 bytes and
   names the delivery mode. Direct console upload is no longer supported for this
@@ -171,7 +183,7 @@ speculatively.
 - [x] DLQ alarm/purge procedure and per-role field allowlist completed in Phase 9
   (2026-11-06).
 
-## Phase 9 — Broker origination readiness (2026-11-06)
+## Phase 9 — Broker origination readiness (top priority, 2026-11-06)
 
 - [x] Expose `readOnly`/`fieldLock` field metadata through `/v1/fields`.
 - [x] Verify official eFolder document and enhanced-condition surfaces; the
@@ -183,11 +195,17 @@ speculatively.
   `/loans/{loanId}/attachmentUploadUrl`, returning Encompass's
   `CreateAttachmentResponse` unchanged so the client can PUT bytes directly to
   the pre-signed URL. Tenant/persona scoping and the 10 KB JSON-body cap apply.
+- [x] Add attachment download URLs via native V3
+  `/loans/{loanId}/attachmentDownloadUrl` with the official
+  `{ attachments: [id] }` body (1–20 ids), returning the download array inside
+  `{ loanId, downloads }`; the client then GETs each URL with its
+  `authorizationHeader`. The gateway never proxies file bytes.
 - [x] Add enhanced-condition read/respond via `/loans/{loanId}/conditions`
   (`PATCH ?action=update`), with the update array validated and a subsequent read
   proving the status change in contract tests.
 - [x] Add fake Encompass state and contract tests for documents, upload
-  initiation plus a real pre-signed PUT, and condition read/respond (63/63 pass).
+  initiation plus real pre-signed PUT/GET round trips, attachment download, and
+  condition read/respond (66/66 pass).
 - [ ] Add a structured 1003/application write surface or a validated broker field
   pack. Current field `PATCH` is capped at 100 fields and is non-transactional.
 - [ ] BLOCKED: verify these V3 document/upload/condition routes against a live
@@ -232,5 +250,6 @@ Do not re-propose these without a new user or lender requirement recorded in
 
 Run `deploy.sh` in AWS CloudShell with real Encompass credentials, open one printed
 role invite link, provision a key, then execute the smoke sequence in `README.md`
-(§ Deploy), including the document list, pre-signed upload, and condition
-read/respond flow. Replace the BLOCKED items above with sanitized results.
+(§ Deploy), including the document list, pre-signed upload, attachment download,
+and condition read/respond flow. Replace the BLOCKED items above with sanitized
+results.

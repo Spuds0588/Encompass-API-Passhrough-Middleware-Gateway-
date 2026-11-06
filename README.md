@@ -69,11 +69,13 @@ curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
   `GET /v1/fields?ids=11,646,CX.TITLE.STATUS` returns live definitions from
   Encompass's native standard and custom field schema APIs. `readOnly` and
   `fieldLock` are included when Encompass supplies them.
-- **Borrower documents and conditions** — `GET /v1/loans/{id}/documents` lists
-  eFolder documents, `POST /v1/loans/{id}/attachmentUploadUrl` returns
-  Encompass's pre-signed upload URL and authorization header, and
-  `GET`/`PATCH /v1/loans/{id}/conditions` read and respond to enhanced
-  conditions. The gateway never handles the uploaded file bytes.
+- **Borrower documents and conditions (top priority)** — `GET
+  /v1/loans/{id}/documents` lists eFolder documents, `POST
+  /v1/loans/{id}/attachmentUploadUrl` returns Encompass's pre-signed upload URL
+  and authorization header, `POST /v1/loans/{id}/attachmentDownloadUrl` returns
+  download URLs and their authorization headers, and `GET`/`PATCH
+  /v1/loans/{id}/conditions` read and respond to enhanced conditions. File bytes
+  move directly between the vendor and Encompass storage.
 - **Zero-dependency portal** — one Lambda renders the invite page, provisions
   keys, attaches them to the usage plan, and stores the tenant mapping.
 - **One-file deployment** — the whole stack lives in a single CloudFormation
@@ -112,6 +114,7 @@ Vendor ──x-api-key────► API Gateway (usage plan)
                          ├── PATCH /v1/loans/{id}   → SQS FIFO enqueue → 202 + job
                          ├── GET  /v1/loans/{id}/documents          → eFolder document list
                          ├── POST /v1/loans/{id}/attachmentUploadUrl → pre-signed upload URL
+                         ├── POST /v1/loans/{id}/attachmentDownloadUrl → pre-signed download URLs
                          ├── GET  /v1/loans/{id}/conditions          → enhanced conditions
                          ├── PATCH /v1/loans/{id}/conditions         → condition response
                          └── GET  /v1/jobs/{id}     → job status
@@ -135,6 +138,7 @@ Storage: DynamoDB tenants + persona tokens + jobs (TTL) · Secrets Manager (clie
 | `PATCH` | `/v1/loans/{id}` body `{ "fields": { "1109": 450000 } }` | `x-api-key` | `202 { status: "ACCEPTED", jobId, loanId, statusUrl }` |
 | `GET` | `/v1/loans/{id}/documents?view=full` | `x-api-key` | `{ loanId, documents: [...] }` (Encompass document objects unchanged) |
 | `POST` | `/v1/loans/{id}/attachmentUploadUrl` body `{ file, title?, assignTo? }` | `x-api-key` | Encompass `CreateAttachmentResponse` (`attachmentId`, `authorizationHeader`, `url`, `multiChunkRequired`, `expiresAt`) |
+| `POST` | `/v1/loans/{id}/attachmentDownloadUrl` body `{ "attachments": ["ATTACHMENT_ID"] }` | `x-api-key` | `{ loanId, downloads: [{ id, url, authorizationHeader?, contentType?, ... }] }` |
 | `GET` | `/v1/loans/{id}/conditions?conditionType=Underwriting` | `x-api-key` | `{ loanId, conditions: [...] }` (enhanced conditions) |
 | `PATCH` | `/v1/loans/{id}/conditions` body `[{ "id": "...", "tracking": [{ "status": "Received", "isChecked": true }] }]` | `x-api-key` | `{ loanId, updated }` |
 | `GET` | `/v1/jobs/{id}` | `x-api-key` | `{ jobId, loanId, status, attempts, createdAt, updatedAt, error }` |
@@ -156,7 +160,7 @@ curl -s -X PATCH "$GATEWAY_URL/v1/loans/LOAN_GUID" \
   -d '{"fields":{"1109":525000}}'
 ```
 
-### Document upload flow
+### Document upload and download flow
 
 1. `POST /v1/loans/{loanId}/attachmentUploadUrl` with the verified Encompass body:
    `{"file":{"contentType":"application/pdf","name":"returns.pdf","size":1234},"title":"Tax returns","assignTo":{"entityId":"DOC_GUID","entityType":"Document"}}`.
@@ -166,6 +170,13 @@ curl -s -X PATCH "$GATEWAY_URL/v1/loans/LOAN_GUID" \
    file bytes to `url` with `Authorization: <authorizationHeader>`. Do **not** send
    the `x-api-key` to that URL; it is a short-lived Encompass upload credential.
 3. Re-read `GET /v1/loans/{loanId}/documents` to confirm the attachment.
+4. `POST /v1/loans/{loanId}/attachmentDownloadUrl` with the official Postman
+   body `{"attachments":["ATTACHMENT_ID"]}` (1–20 ids). The `200` response is
+   `{ loanId, downloads: [...] }`; each entry keeps Encompass's `id`, `url`,
+   optional `authorizationHeader`, `contentType`, and related fields.
+5. `GET` each `url`, sending `Authorization: <authorizationHeader>` when it is
+   present. Download bytes, like upload bytes, go directly between the vendor
+   and Encompass storage and never pass through the gateway.
 
 File bytes go directly to Encompass storage and never pass through the gateway.
 If a response has `multiChunkRequired: true` (files over 60 MB), Encompass's
@@ -185,11 +196,12 @@ vendor holding one invite link cannot mint a key for another role.
 
 ## Broker 1003, documents, and conditions
 
-The gateway supports the document and condition parts of a broker workflow:
-list eFolder documents, initiate a pre-signed attachment upload, read enhanced
-conditions, and respond to a condition so a later read shows the new status.
-These are thin passthroughs of the officially verified V3 contracts; the gateway
-does not reinterpret document or condition objects.
+The gateway treats the document and condition workflow as the primary broker use
+case: list eFolder documents, initiate a pre-signed attachment upload, get
+pre-signed download URLs and download file bytes, read enhanced conditions, and
+respond to a condition so a later read shows the new status. These are thin
+passthroughs of the officially verified V3 contracts; the gateway does not
+reinterpret document or condition objects.
 
 A broker can write 1003 data when it knows the Encompass field IDs, but at most
 100 fields per async job. Larger applications must be split across jobs; there is
@@ -207,9 +219,9 @@ Still not supported:
   atomic across jobs.
 - **Standard (V1) conditions.** Only enhanced conditions (`/conditions`) are
   proxied, not the separate preliminary/underwriting/post-closing V1 APIs.
-- **Document mutation and download.** Only list and upload initiation are
-  proxied; document create/update/remove, attachment download, and the
-  multi-chunk commit flow remain direct Encompass integrations.
+- **Document mutation.** Document create/update/remove and the multi-chunk
+  commit flow remain direct Encompass integrations. Attachment download is
+  supported through the native download-URL endpoint.
 
 Official references: [V3 Manage Documents](https://developer.icemortgagetechnology.com/developer-connect/reference/get-list-of-documents),
 [V3 Create Attachment URL](https://developer.icemortgagetechnology.com/developer-connect/reference/create-attachment-url),
@@ -241,14 +253,15 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 63 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
+npm test          # 66 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```
 
 Coverage highlights: token exchange and cache reuse/expiry, tenant isolation,
 field projection and validation, writeability metadata, inactive-tenant rejection,
-read cache hits, 202 enqueue, job ownership, worker success, 423 retry-then-success,
+attachment download URLs plus a real byte download, read cache hits, 202 enqueue,
+job ownership, worker success, 423 retry-then-success,
 permanent 4xx failure, attempt exhaustion, invite validation and role mismatch,
 persona locking, field schema lookup and caching, CSP on the portal, and template
 guards (API key requirement, FIFO + DLQ, SSE, bounded retention, no secret
@@ -373,14 +386,14 @@ remaining deletion, alarm, and offboarding work.
 - The cheat sheet covers 11 common fields. The lender's `CX.*` fields are only
   discoverable through `/v1/fields` once they exist in that Encompass instance.
 - Broker support covers field reads/writes, eFolder document listing, pre-signed
-  attachment upload initiation, and enhanced-condition read/respond. It does not
-  cover structured 1003/application submission, standard (V1) conditions,
-  document download/delete, or multi-chunk orchestration; full 1003s may exceed
-  the 100-field per-job cap.
+  attachment upload initiation and download URLs, and enhanced-condition
+  read/respond. It does not cover structured 1003/application submission,
+  standard (V1) conditions, document create/update/remove, or multi-chunk
+  orchestration; full 1003s may exceed the 100-field per-job cap.
 - `/v1/fields` exposes read-only metadata. Optional `TitleWriteFields`,
   `BrokerWriteFields`, and `AppraisalWriteFields` parameters add a gateway-level
   write allowlist; Encompass persona permissions remain the authorization control.
-- The template is about 64 KB, over CloudFormation's 51,200-byte direct-upload
+- The template is about 66 KB, over CloudFormation's 51,200-byte direct-upload
   limit. Use `deploy.sh` (S3-hosted) or upload the template to S3 yourself; the
   S3-hosted limit is 1,000,000 bytes.
 - The `EncompassBaseUrl` default is `https://api.elliemae.com`; override it for
