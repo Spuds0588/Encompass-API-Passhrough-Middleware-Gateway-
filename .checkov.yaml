@@ -1,0 +1,49 @@
+# Checkov policy for the generated CloudFormation template.
+# Run: checkov --file template.yaml --framework cloudformation --compact --config-file .checkov.yaml
+#
+# Every skip below is an intentional architecture decision, not an unreviewed
+# finding. Fixed findings (DynamoDB PITR, SNS encryption, redundant API stage
+# dependency) are enforced in template.yaml and must not be added here.
+skip-check:
+  # AWS-managed Secrets Manager key encrypts the client secret at rest. A
+  # customer CMK would add a key policy and monthly cost without changing IAM
+  # access to the secret.
+  - CKV_AWS_149
+  # DynamoDB SSE uses AWS-owned keys. Tables hold tenant mappings, transient
+  # tokens, job status, and provisioning claims, never loan data. Four customer
+  # CMKs would add key policy and cost for no data-classification gain.
+  - CKV_AWS_119
+  # Both queues set SqsManagedSseEnabled: true (SSE-SQS). Checkov 3.4.3 only
+  # credits KmsMasterKeyId; SSE-SQS already encrypts at rest without KMS request
+  # charges.
+  - CKV_AWS_27
+  # Log groups carry metadata-only structured lines (request ID, action, status)
+  # with bounded retention; no bodies, tokens, or field values. A CMK adds cost
+  # without protecting loan data that is not logged.
+  - CKV_AWS_158
+  # The handler must reach the public Encompass API. A VPC would require a NAT
+  # gateway (about $32/month) and add ENI cold-start latency for no private
+  # resource access.
+  - CKV_AWS_117
+  # Stage throttling (1 rps portal, 50 rps vendor) and the SQS mapping's
+  # MaximumConcurrency: 5 bound load. Reserved concurrency can starve a shared
+  # account and break deployment in low-limit accounts.
+  - CKV_AWS_115
+  # Environment variables hold table names, queue URL, persona IDs, and field
+  # allowlists. The Encompass client secret is read from Secrets Manager at
+  # runtime, so no secret material is in the Lambda environment.
+  - CKV_AWS_173
+  # The only asynchronous invocation is the SQS event source, whose queue has a
+  # redrive DLQ, alarm, and job status. API Gateway invokes synchronously.
+  - CKV_AWS_116
+  # GET/POST /portal and GET /health are intentionally public: invite-gated
+  # onboarding and a no-data health check. POST /portal is stage-throttled to
+  # 1 rps/burst 2; every vendor route requires an API key.
+  - CKV_AWS_59
+  # Responses are tenant-scoped by API key; an API Gateway cache would risk
+  # cross-tenant leakage and add cost. Reads and schemas are cached in the
+  # handler per persona for 30 seconds / 5 minutes.
+  - CKV_AWS_120
+  # Request IDs propagate through responses, jobs, SQS, logs, and alarms.
+  # X-Ray adds cost and is not required for MVP correlation.
+  - CKV_AWS_73

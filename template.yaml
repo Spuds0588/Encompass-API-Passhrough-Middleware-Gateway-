@@ -98,6 +98,8 @@ Resources:
           KeyType: HASH
       SSESpecification:
         SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
 
   ProvisioningTable:
     Type: AWS::DynamoDB::Table
@@ -111,6 +113,8 @@ Resources:
           KeyType: HASH
       SSESpecification:
         SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -127,6 +131,8 @@ Resources:
           KeyType: HASH
       SSESpecification:
         SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -143,6 +149,8 @@ Resources:
           KeyType: HASH
       SSESpecification:
         SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -159,6 +167,7 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: !Sub "${AWS::StackName} gateway alerts"
+      KmsMasterKeyId: alias/aws/sns
 
   OpsAlertSubscription:
     Type: AWS::SNS::Subscription
@@ -1697,7 +1706,6 @@ Resources:
   ApiStage:
     Type: AWS::ApiGateway::Stage
     DependsOn:
-      - ApiDeployment
       - ApiGatewayAccount
     Properties:
       RestApiId: !Ref Api

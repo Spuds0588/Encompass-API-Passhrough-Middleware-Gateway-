@@ -23,3 +23,18 @@ jobs:
         run: npm test
       - name: Template is in sync and deployable size
         run: node scripts/build.js --check
+
+  iac:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install IaC scanners
+        run: python3 -m pip install --disable-pip-version-check cfn-lint==1.60.0 checkov==3.4.3
+      - name: Lint CloudFormation template
+        run: cfn-lint template.yaml
+      - name: Security-scan CloudFormation template
+        run: checkov --file template.yaml --framework cloudformation --compact --config-file .checkov.yaml

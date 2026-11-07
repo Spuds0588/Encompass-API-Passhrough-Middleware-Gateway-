@@ -638,3 +638,32 @@ a new dated entry.
 - This verification entry is itself a docs-only follow-up commit; its own CI,
   Pages build, raw/live bytes, clean worktree, and cleanup checks are reported in
   the delivery response.
+
+## 2026-11-07 — Deploy supply-chain hardening and IaC scanning
+
+- Completed the deploy-hardening P1. `deploy.sh` pins `template.yaml` to the
+  `v0.1.0` release tag and verifies SHA-256
+  `af75648d5a2382385dbad879076b7965526c6ce6698ca8f3a67ba4c3228e81fe`.
+  The tag is only a locator; the digest is the integrity anchor, so a moved or
+  mistyped tag fails closed.
+- Secret handling no longer exposes material in CLI arguments. The Encompass
+  client secret and role invite codes are written by `jq` in a subshell to a
+  `0600` temporary JSON parameter file and passed as `--parameter-overrides
+  file://...`; an EXIT trap removes the template and parameter files. `jq` and
+  `sha256sum` are required checks.
+- Added a dedicated CI `iac` job with pinned `cfn-lint==1.60.0` and
+  `checkov==3.4.3`. `.checkov.yaml` records 11 documented architecture
+  exceptions: AWS-managed keys instead of customer CMKs, SSE-SQS, no VPC/NAT,
+  public invite/health routes, tenant-scoped no-cache, no X-Ray, and the Lambda
+  DLQ/environment/concurrency choices.
+- Fixed the real low-cost findings instead of skipping them: DynamoDB PITR on
+  all four tables, SNS topic encryption with `alias/aws/sns`, and removal of the
+  redundant `ApiDeployment` stage dependency that cfn-lint reported as W3005.
+- Local verification: `npm run verify` passed 77/77 tests with the template in
+  sync at 78,534 bytes; `cfn-lint template.yaml` exited 0; Checkov exited 0 with
+  28 passed and 0 failed; `bash -n deploy.sh` and `git diff --check` were clean.
+- Updated `README.md`, `agents.md`, `llms.txt`, `index.html`, `SECURITY.md`,
+  `todo.md`, and this history for the release-tag pin, scanner policy, PITR/SNS
+  controls, and new template size. No AWS or Encompass access was used; live
+  deployment, KMS/PITR behavior, and CloudShell tag resolution remain
+  unverified until the release is pushed and fetched.

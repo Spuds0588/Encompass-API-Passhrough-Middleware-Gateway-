@@ -356,8 +356,8 @@
 
       <section id="deploy" aria-labelledby="deploy-title">
         <h2 id="deploy-title">Deploy in one line</h2>
-        <p class="muted">Run inside AWS CloudShell. The template is larger than CloudFormation's 51,200-byte direct-upload limit, so the installer creates an S3 bucket and hosts it there automatically. To use the console, upload <code>template.yaml</code> to S3 first. The installer asks for the Encompass instance ID, API client ID, and client secret, then prints the gateway URL and three role-scoped invite links.</p>
-        <pre><code>bash &lt;(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)</code></pre>
+        <p class="muted">Run inside AWS CloudShell. The template is larger than CloudFormation's 51,200-byte direct-upload limit, so the installer creates an S3 bucket and hosts it there automatically. To use the console, upload <code>template.yaml</code> to S3 first. The installer asks for the Encompass instance ID, API client ID, and client secret, pins the template to a release tag, verifies its SHA-256, keeps secrets out of process arguments with a protected temporary parameter file, and prints the gateway URL and three role-scoped invite links.</p>
+        <pre><code>bash &lt;(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)</code></pre>
         <p class="muted">Full parameter reference, smoke tests, and local development instructions are in the <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/README.md">README</a>.</p>
       </section>
 

@@ -69,7 +69,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 | `infra/template.yaml` | CloudFormation source with a `//__GATEWAY_CODE__` placeholder. |
 | `template.yaml` | Generated, committed deployable template. Never edit by hand. |
 | `scripts/build.js` | Inlines the handler into the template, enforces the 1,000,000-byte S3-hosted limit, supports `--check`. |
-| `deploy.sh` | One-line AWS CloudShell deployment; fetches the committed template, uses `--s3-bucket` above 51,200 bytes, and deploys the stack. |
+| `deploy.sh` | One-line AWS CloudShell deployment; fetches a pinned template release tag, verifies SHA-256, uses TLS-only curl, passes secrets in a protected parameter file, uses `--s3-bucket` above 51,200 bytes, and deploys the stack. |
 | `dev/fake-encompass.js` | Local fake OAuth + loans + schema + eFolder documents + pre-signed uploads/downloads + enhanced conditions, including 423 lock simulation. |
 | `dev/memory-store.js` | In-memory storage/queue adapter for local runs. Never deployed. |
 | `dev/server.js` | Local API Gateway + SQS emulator around the real handler. |
@@ -85,7 +85,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 74 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 77 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -178,6 +178,16 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - Gateway IAM is scoped to the four tables, two queues, one secret, and only the
   API Gateway key operations the portal needs: create/attach, get, remove from the
   usage plan, and delete.
+- `deploy.sh` pins `template.yaml` to the `v0.1.0` release tag and verifies
+  SHA-256 before deploying; the digest is the integrity anchor, so a moved tag
+  fails closed. curl is constrained to HTTPS/TLS 1.2+. The client secret and invite
+  codes are written to a `0600` temp parameter file passed as `file://`, never as
+  CLI arguments, and the trap removes both temp files. Update `TEMPLATE_REF` and
+  `TEMPLATE_SHA256` together; never add a checksum bypass.
+- CI runs pinned `cfn-lint` and Checkov against the generated template in
+  addition to Node 20/24 tests and the build-sync check. `.checkov.yaml` holds
+  only documented intentional exceptions; never add a finding that the template
+  can fix.
 
 ## Workflow
 
@@ -203,10 +213,10 @@ npm run dev       # local gateway at :3000 with fake Encompass
   a fake Encompass and in-memory AWS. It proves routing, auth, caching, and retry
   behavior, not AWS resource behavior.
 - The deployable artifact is verified in CI on `main`
-  (`.github/workflows/ci.yml`) and by fetching the raw `template.yaml` from
-  GitHub, which is exactly what `deploy.sh` downloads.
+  (`.github/workflows/ci.yml`) and by fetching the pinned release tag's raw
+  `template.yaml` from GitHub, which is exactly what `deploy.sh` downloads.
 - `scripts/build.js` compacts the inlined deploy copy and enforces 1,000,000
-  bytes. The template is about 68 KB, above CloudFormation's 51,200-byte direct
+  bytes. The template is 78,534 bytes, above CloudFormation's 51,200-byte direct
   limit, so `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket`
   (S3-hosted limit: 1 MB). Keep the source formatted; do not hand-edit
   `template.yaml`.

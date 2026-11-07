@@ -10,7 +10,12 @@
 #   STACK_NAME, AWS_REGION, ENCOMPASS_INSTANCE, ENCOMPASS_CLIENT_ID,
 #   ENCOMPASS_CLIENT_SECRET, TITLE_INVITE_CODE, BROKER_INVITE_CODE,
 #   APPRAISAL_INVITE_CODE, TITLE_PERSONA, BROKER_PERSONA, APPRAISAL_PERSONA,
-#   TEMPLATE_URL, ARTIFACT_BUCKET
+#   TEMPLATE_REF, TEMPLATE_SHA256, TEMPLATE_URL, ARTIFACT_BUCKET
+#
+# The template is fetched from the pinned v0.1.0 release tag and verified against
+# its SHA-256 before deployment. The tag is only a locator; the digest is the
+# integrity anchor, so a moved or mistyped tag fails closed. The client secret and invite codes are written to a 0600
+# temporary parameter file and passed as file://, never as process arguments.
 #
 # Templates up to 51,200 bytes deploy directly. Larger templates are uploaded
 # to an S3 bucket (created automatically unless ARTIFACT_BUCKET is set), which
@@ -25,7 +30,9 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 STACK_NAME="${STACK_NAME:-Encompass-API-Gateway}"
-TEMPLATE_URL="${TEMPLATE_URL:-https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/template.yaml}"
+TEMPLATE_REF="${TEMPLATE_REF:-v0.1.0}"
+TEMPLATE_SHA256="${TEMPLATE_SHA256:-af75648d5a2382385dbad879076b7965526c6ce6698ca8f3a67ba4c3228e81fe}"
+TEMPLATE_URL="${TEMPLATE_URL:-https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/${TEMPLATE_REF}/template.yaml}"
 
 say() { printf '%b\n' "$1"; }
 
@@ -36,6 +43,11 @@ say "${BLUE}====================================================${NC}"
 command -v aws >/dev/null 2>&1 || { say "${RED}[ERROR] AWS CLI not found. Run this in AWS CloudShell.${NC}"; exit 1; }
 command -v curl >/dev/null 2>&1 || { say "${RED}[ERROR] curl not found.${NC}"; exit 1; }
 command -v openssl >/dev/null 2>&1 || { say "${RED}[ERROR] openssl not found; set invite codes manually.${NC}"; exit 1; }
+command -v sha256sum >/dev/null 2>&1 || { say "${RED}[ERROR] sha256sum not found.${NC}"; exit 1; }
+command -v jq >/dev/null 2>&1 || { say "${RED}[ERROR] jq not found; install jq or use CloudShell.${NC}"; exit 1; }
+if ! printf '%s' "$TEMPLATE_SHA256" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+  say "${RED}[ERROR] TEMPLATE_SHA256 must be a 64-character hex digest.${NC}"; exit 1
+fi
 
 say "\n${YELLOW}[1/4] Verifying AWS credentials...${NC}"
 CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null || true)"
@@ -73,12 +85,24 @@ APPRAISAL_PERSONA="${APPRAISAL_PERSONA:-api_appraisal_template}"
 
 say "${GREEN}Role invite codes are ready (printed with links after deployment).${NC}"
 
-say "\n${YELLOW}[3/4] Fetching latest template...${NC}"
+say "\n${YELLOW}[3/4] Fetching pinned template...${NC}"
 TMP_TEMPLATE="$(mktemp "${TMPDIR:-/tmp}/encompass-gateway-XXXXXX.yaml")"
-trap 'rm -f "$TMP_TEMPLATE"' EXIT
+TMP_PARAMS="$(mktemp "${TMPDIR:-/tmp}/encompass-gateway-params-XXXXXX.json")"
+chmod 600 "$TMP_PARAMS"
+trap 'rm -f "$TMP_TEMPLATE" "$TMP_PARAMS"' EXIT
 
-if ! curl -fsSL "$TEMPLATE_URL" -o "$TMP_TEMPLATE"; then
-  say "${RED}[ERROR] Could not download ${TEMPLATE_URL}${NC}"
+if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+  "$TEMPLATE_URL" --output "$TMP_TEMPLATE"; then
+  say "${RED}[ERROR] Could not download ${TEMPLATE_URL} over TLS.${NC}"
+  exit 1
+fi
+
+ACTUAL_SHA256="$(sha256sum "$TMP_TEMPLATE" | awk '{print $1}')"
+EXPECTED_SHA256="$(printf '%s' "$TEMPLATE_SHA256" | tr '[:upper:]' '[:lower:]')"
+if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+  say "${RED}[ERROR] Template SHA-256 mismatch.${NC}"
+  say "${RED}Expected: ${EXPECTED_SHA256}${NC}"
+  say "${RED}Actual:   ${ACTUAL_SHA256}${NC}"
   exit 1
 fi
 
@@ -114,6 +138,28 @@ if [ -n "${AWS_REGION:-}" ]; then
   REGION_ARGS=(--region "$AWS_REGION")
 fi
 
+# Keep secrets out of process arguments. jq reads them from the environment in
+# a subshell; only this protected file path is passed to the AWS CLI.
+if ! (
+  export ENCOMPASS_INSTANCE ENCOMPASS_CLIENT_ID ENCOMPASS_CLIENT_SECRET
+  export TITLE_INVITE_CODE BROKER_INVITE_CODE APPRAISAL_INVITE_CODE
+  export TITLE_PERSONA BROKER_PERSONA APPRAISAL_PERSONA
+  jq -n '[
+    {ParameterKey:"EncompassInstanceId",ParameterValue:env.ENCOMPASS_INSTANCE},
+    {ParameterKey:"EncompassClientId",ParameterValue:env.ENCOMPASS_CLIENT_ID},
+    {ParameterKey:"EncompassClientSecret",ParameterValue:env.ENCOMPASS_CLIENT_SECRET},
+    {ParameterKey:"TitleInviteCode",ParameterValue:env.TITLE_INVITE_CODE},
+    {ParameterKey:"BrokerInviteCode",ParameterValue:env.BROKER_INVITE_CODE},
+    {ParameterKey:"AppraisalInviteCode",ParameterValue:env.APPRAISAL_INVITE_CODE},
+    {ParameterKey:"TitleServiceUserId",ParameterValue:env.TITLE_PERSONA},
+    {ParameterKey:"BrokerServiceUserId",ParameterValue:env.BROKER_PERSONA},
+    {ParameterKey:"AppraisalServiceUserId",ParameterValue:env.APPRAISAL_PERSONA}
+  ]' > "$TMP_PARAMS"
+); then
+  say "${RED}[ERROR] Could not prepare parameter overrides.${NC}"
+  exit 1
+fi
+
 aws cloudformation deploy \
   "${REGION_ARGS[@]}" \
   "${S3_ARGS[@]}" \
@@ -121,16 +167,7 @@ aws cloudformation deploy \
   --stack-name "$STACK_NAME" \
   --capabilities CAPABILITY_IAM \
   --no-fail-on-empty-changeset \
-  --parameter-overrides \
-    EncompassInstanceId="$ENCOMPASS_INSTANCE" \
-    EncompassClientId="$ENCOMPASS_CLIENT_ID" \
-    EncompassClientSecret="$ENCOMPASS_CLIENT_SECRET" \
-    TitleInviteCode="$TITLE_INVITE_CODE" \
-    BrokerInviteCode="$BROKER_INVITE_CODE" \
-    AppraisalInviteCode="$APPRAISAL_INVITE_CODE" \
-    TitleServiceUserId="$TITLE_PERSONA" \
-    BrokerServiceUserId="$BROKER_PERSONA" \
-    AppraisalServiceUserId="$APPRAISAL_PERSONA"
+  --parameter-overrides "file://$TMP_PARAMS"
 
 say "\n${GREEN}====================================================${NC}"
 say "${GREEN}             DEPLOYMENT SUCCESSFUL                  ${NC}"

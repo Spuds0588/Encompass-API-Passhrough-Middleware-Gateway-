@@ -39,6 +39,24 @@ and the deployment script. Out of scope: vulnerabilities in Encompass, AWS, or
 third-party dependencies; social engineering; and reports that require a live
 lender account without a local reproduction.
 
+## Deployment supply chain
+
+`deploy.sh` pins `template.yaml` to the `v0.1.0` release tag and verifies its
+SHA-256 before deployment. The tag is only a locator; the digest is the integrity
+anchor, so a moved or mistyped tag aborts. The download uses
+`curl --proto '=https' --tlsv1.2`; a checksum mismatch aborts. If you deploy a
+fork or release, update `TEMPLATE_REF` and `TEMPLATE_SHA256` together. Do not
+disable or bypass the checksum check.
+
+The Encompass client secret and role invite codes are written to a `0600`
+temporary parameter file and passed to CloudFormation as `file://`; only the file
+path appears in process arguments. An EXIT trap removes the template and
+parameter files. CI pins `cfn-lint` and Checkov and runs both against the
+generated template. `.checkov.yaml` documents the intentional architecture
+exceptions (no VPC, public invite portal, SSE-SQS, tenant-scoped no-cache);
+findings that can be fixed cheaply, such as DynamoDB PITR and SNS encryption,
+are enforced in the template and are not skipped.
+
 ## Invite lifecycle
 
 Invite codes are **shared per role**, not single-use. A title invite can be used

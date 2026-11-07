@@ -7,12 +7,15 @@ transit SQS, and read projections live in Lambda memory for up to 30 seconds.
 ## Deploy (AWS CloudShell, ~3 minutes)
 
 ```bash
-bash <(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)
+bash <(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)
 ```
 
 The script verifies your AWS session, asks for the Encompass instance ID, client
 ID, and client secret, generates three role invite codes, fetches the committed
-template, and deploys `Encompass-API-Gateway` with `CAPABILITY_IAM`.
+template from a pinned release tag, verifies its SHA-256, and deploys
+`Encompass-API-Gateway` with `CAPABILITY_IAM`. The client secret and invite codes
+are written to a `0600` temporary parameter file and passed to CloudFormation as
+`file://`; they do not appear in process arguments.
 
 It prints:
 
@@ -30,7 +33,11 @@ existing links keep working.
 Environment overrides: `STACK_NAME`, `AWS_REGION`, `ENCOMPASS_INSTANCE`,
 `ENCOMPASS_CLIENT_ID`, `ENCOMPASS_CLIENT_SECRET`, `TITLE_INVITE_CODE`,
 `BROKER_INVITE_CODE`, `APPRAISAL_INVITE_CODE`, `TITLE_PERSONA`,
-`BROKER_PERSONA`, `APPRAISAL_PERSONA`, `TEMPLATE_URL`, `ARTIFACT_BUCKET`.
+`BROKER_PERSONA`, `APPRAISAL_PERSONA`, `TEMPLATE_REF`, `TEMPLATE_SHA256`,
+`TEMPLATE_URL`, `ARTIFACT_BUCKET`. The default `TEMPLATE_REF` is the `v0.1.0`
+release tag; the pinned SHA-256 is the integrity anchor, so a moved or mistyped
+tag aborts. Change `TEMPLATE_REF` and `TEMPLATE_SHA256` together when pinning a
+fork or new release.
 
 The committed template is larger than CloudFormation's 51,200-byte direct-upload
 limit. `deploy.sh` detects that and uploads it to an S3 bucket it creates
@@ -257,7 +264,7 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 74 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
+npm test          # 77 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```
@@ -265,8 +272,11 @@ npm run build     # regenerate template.yaml after editing src/ or infra/
 Coverage highlights: token exchange and cache reuse/expiry, tenant isolation,
 field projection and validation, writeability metadata, inactive-tenant rejection,
 idempotent portal provisioning, concurrent-claim rejection, rollback of a new key
-when tenant mapping fails, disabled-key rejection, and the stage throttle and IAM
-wiring for portal key minting,
+when tenant mapping fails, disabled-key rejection, the stage throttle and IAM
+wiring for portal key minting, and the deploy-script TLS/checksum/secret-file
+guards, DynamoDB point-in-time recovery, SNS encryption, and the documented
+Checkov policy. CI pins `cfn-lint` and Checkov and runs both against the
+generated template.
 attachment download URLs plus a real byte download, request-ID correlation across
 HTTP responses, jobs, SQS, and worker logs, read cache hits, 202 enqueue, job
 ownership, worker success, 423 retry-then-success,
@@ -356,7 +366,7 @@ keys keep working; the old invite URL stops working immediately:
 TITLE_INVITE_CODE="$(openssl rand -hex 24)" \
 BROKER_INVITE_CODE="$BROKER_INVITE_CODE" \
 APPRAISAL_INVITE_CODE="$APPRAISAL_INVITE_CODE" \
-bash <(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)
+bash <(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)
 ```
 
 If a role's code is omitted, `deploy.sh` generates a new one and prints it. Save
@@ -464,7 +474,7 @@ remaining deletion, alarm, and offboarding work.
 
 - **Not deployed to AWS from this repository's development environment** (no AWS
   credentials or Encompass access). Production verification so far is CI plus the
-  raw-template fetch used by `deploy.sh`; see `history.md`.
+  pinned-template fetch and SHA-256 check used by `deploy.sh`; see `history.md`.
 - No tenant revocation endpoint, key rotation UI, admin dashboard, or CORS.
   Vendors are expected to integrate server-to-server.
 - One shared usage plan/quota for all tenants (per-tenant quotas are deferred).
@@ -480,7 +490,7 @@ remaining deletion, alarm, and offboarding work.
 - `/v1/fields` exposes read-only metadata. Optional `TitleWriteFields`,
   `BrokerWriteFields`, and `AppraisalWriteFields` parameters add a gateway-level
   write allowlist; Encompass persona permissions remain the authorization control.
-- The template is about 68 KB, over CloudFormation's 51,200-byte direct-upload
+- The template is 78,534 bytes, over CloudFormation's 51,200-byte direct-upload
   limit. Use `deploy.sh` (S3-hosted) or upload the template to S3 yourself; the
   S3-hosted limit is 1,000,000 bytes.
 - Access logging configures one account-wide API Gateway CloudWatch role
@@ -488,5 +498,7 @@ remaining deletion, alarm, and offboarding work.
   a role another stack relies on before deploying.
 - The `EncompassBaseUrl` default is `https://api.elliemae.com`; override it for
   sandbox or instance-specific hosts.
-- `deploy.sh` pulls `template.yaml` from the `main` raw URL;
-  raw.githubusercontent.com may serve a cached copy for a few minutes after a push.
+- `deploy.sh` fetches `template.yaml` from the `v0.1.0` release tag and fails
+  closed on a SHA-256 mismatch. The digest, not the tag, is the integrity anchor.
+  To deploy a fork or a new release, set `TEMPLATE_REF` and `TEMPLATE_SHA256`
+  together; do not disable the checksum check.

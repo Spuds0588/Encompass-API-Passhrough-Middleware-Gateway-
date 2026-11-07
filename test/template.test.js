@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
+const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
@@ -101,6 +102,16 @@ test("write pipeline is FIFO with retries, SSE, and bounded retention", () => {
   assert.match(template, /SqsManagedSseEnabled: true/);
 });
 
+test("tables enable PITR, the ops topic is encrypted, and the stage dependency is not repeated", () => {
+  assert.equal((template.match(/PointInTimeRecoverySpecification:/g) || []).length, 4);
+  assert.equal((template.match(/PointInTimeRecoveryEnabled: true/g) || []).length, 4);
+  const topic = template.slice(template.indexOf("OpsAlertTopic:"), template.indexOf("OpsAlertSubscription:"));
+  assert.match(topic, /KmsMasterKeyId: alias\/aws\/sns/);
+  const stage = template.slice(template.indexOf("ApiStage:"), template.indexOf("UsagePlan:"));
+  assert.match(stage, /- ApiGatewayAccount/);
+  assert.ok(!stage.includes("- ApiDeployment"), "ApiStage must not repeat the Ref-implied dependency");
+});
+
 test("DLQ depth alarm notifies an SNS topic", () => {
   assert.match(template, /AWS::CloudWatch::Alarm/);
   assert.match(template, /AWS::SNS::Topic/);
@@ -149,14 +160,59 @@ test("embedded handler includes documents, attachment upload/download, and condi
   }
 });
 
-test("deploy.sh is executable and points at this repository's template", () => {
+test("deploy.sh pins and verifies the template, uses TLS, and keeps secrets out of argv", () => {
   const deployPath = path.join(root, "deploy.sh");
   const stat = fs.statSync(deployPath);
   assert.ok(stat.mode & 0o111, "deploy.sh must be executable");
   const deploy = fs.readFileSync(deployPath, "utf8");
-  assert.match(deploy, /Spuds0588\/Encompass-API-Passhrough-Middleware-Gateway-\/main\/template\.yaml/);
+  const ref = deploy.match(/TEMPLATE_REF="\$\{TEMPLATE_REF:-(v\d+\.\d+\.\d+)\}"/);
+  const sha = deploy.match(/TEMPLATE_SHA256="\$\{TEMPLATE_SHA256:-([0-9a-f]{64})\}"/);
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.ok(ref, "deploy.sh must pin a release tag");
+  assert.equal(ref[1], `v${pkg.version}`, "deploy.sh must pin the package release tag");
+  assert.ok(sha, "deploy.sh must pin a 64-character template SHA-256");
+  assert.equal(sha[1], createHash("sha256").update(template).digest("hex"));
+  assert.ok(deploy.includes("/${TEMPLATE_REF}/template.yaml"));
+  assert.ok(!deploy.includes("/main/template.yaml"));
+  assert.match(deploy, /--proto '=https'/);
+  assert.match(deploy, /--tlsv1\.2/);
+  assert.match(deploy, /sha256sum/);
+  assert.match(deploy, /chmod 600 "\$TMP_PARAMS"/);
+  assert.match(deploy, /--parameter-overrides "file:\/\/\$TMP_PARAMS"/);
+  assert.match(deploy, /ParameterValue:env\.ENCOMPASS_CLIENT_SECRET/);
+  assert.ok(!deploy.includes('EncompassClientSecret="$ENCOMPASS_CLIENT_SECRET"'));
   assert.match(deploy, /aws cloudformation deploy/);
   assert.match(deploy, /--capabilities CAPABILITY_IAM/);
-  assert.match(deploy, /TitleInviteCode="\$TITLE_INVITE_CODE"/);
   assert.match(deploy, /\?role=title&code=\$\{TITLE_INVITE_CODE\}/);
+  execFileSync("bash", ["-n", deployPath], { stdio: "pipe" });
+});
+
+test("CI runs cfn-lint and an IaC security scan", () => {
+  const ci = fs.readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+  assert.match(ci, /cfn-lint==\d+\.\d+\.\d+/);
+  assert.match(ci, /checkov==\d+\.\d+\.\d+/);
+  assert.match(ci, /template\.yaml/);
+  assert.match(ci, /pip install/);
+  assert.match(ci, /--config-file \.checkov\.yaml/);
+});
+
+test("Checkov policy documents intentional controls and excludes fixed findings", () => {
+  const policy = fs.readFileSync(path.join(root, ".checkov.yaml"), "utf8");
+  for (const id of [
+    "CKV_AWS_149",
+    "CKV_AWS_119",
+    "CKV_AWS_27",
+    "CKV_AWS_158",
+    "CKV_AWS_117",
+    "CKV_AWS_115",
+    "CKV_AWS_173",
+    "CKV_AWS_116",
+    "CKV_AWS_59",
+    "CKV_AWS_120",
+    "CKV_AWS_73",
+  ]) {
+    assert.match(policy, new RegExp(id));
+  }
+  assert.ok(!policy.includes("CKV_AWS_28"), "DynamoDB PITR must be fixed, not skipped");
+  assert.ok(!policy.includes("CKV_AWS_26"), "SNS encryption must be fixed, not skipped");
 });

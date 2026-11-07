@@ -26,7 +26,7 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Scoped IAM role (no wildcard resources for data access)
 - [x] `deploy.sh` one-line CloudShell installer with outputs (superseded: now generates three role invite codes instead of an admin token)
 - [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (50,376 bytes after 2026-11-06 field/writeability work)
-- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 78,196 bytes)
+- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 78,534 bytes)
 
 ## Phase 2 — Token management & impersonation
 
@@ -87,10 +87,10 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Production-shaped HTTP e2e: portal invite → key → fields → read → enqueue → worker → job → retry
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, invite parameters, native schema paths, size, in-sync
 - [x] 50/50 tests passing locally (`npm run verify`)
-- [x] 74/74 tests passing locally after portal key lifecycle (`npm run verify`; template 78,196 bytes, S3-hosted delivery)
+- [x] 77/77 tests passing locally after deploy hardening (`npm run verify`; template 78,534 bytes, S3-hosted delivery)
 - [x] Field writeability/retention hardening verified at commit `83f0057` (CI run `42305287711` green on Node 20/24; Pages `built`; live index, docs, and template bytes verified)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
-- [x] `cfn-lint` clean on the final template (exit 0)
+- [x] `cfn-lint` clean on the final template (exit 0); CI also runs pinned Checkov with a documented `.checkov.yaml` policy
 - [x] CI green on Node 20 and Node 24 for the earlier MVP commit (`6a22a5e`)
 - [x] Earlier production artifact verified against the GitHub contents API and raw URL
 - [x] Push invite/field-schema commit and verify new CI run + raw artifact (commit `9d0d23e`, CI run `42298202063` green on Node 20/24; template 49,922 bytes, sha256 `70ce427d...`, raw `main` matches)
@@ -160,10 +160,24 @@ speculatively.
   AsyncLocalStorage. Added a metadata-only API Gateway access-log format,
   `GatewayErrorsAlarm`, and `Api5xxAlarm` on the existing SNS topic. Not deployed
   to AWS here; local tests prove the HTTP/job/queue/log propagation only.
-- [ ] **P1 — Harden `deploy.sh` against supply-chain and secret exposure.** Pin a
+- [x] **P1 — Harden `deploy.sh` against supply-chain and secret exposure.** Pin a
   release tag or commit and verify SHA-256; use TLS-constrained curl; avoid
   passing the client secret through CLI process arguments where a pre-created
   secret ARN is practical. Add `cfn-lint` and an IaC security scan to CI.
+  Completed 2026-11-07: `deploy.sh` pins the template to the `v0.1.0` release tag
+  with SHA-256
+  `af75648d5a2382385dbad879076b7965526c6ce6698ca8f3a67ba4c3228e81fe`,
+  uses `curl --proto '=https' --tlsv1.2`, and aborts on a digest mismatch; the
+  digest is the integrity anchor, so a moved tag fails closed. The client secret
+  and invite codes are passed through a `0600` temporary JSON parameter file
+  (`file://`), not CLI arguments; an EXIT trap removes it. Added a dedicated CI
+  `iac` job with pinned `cfn-lint` 1.60.0 and Checkov 3.4.3, plus `.checkov.yaml`
+  documenting intentional architecture exceptions. Fixed the real low-cost
+  findings in the template: DynamoDB PITR on all four tables, SNS topic
+  encryption, and a redundant API stage dependency. Local `cfn-lint` and Checkov
+  both exit 0 (template 78,534 bytes). Local tests assert the pin/hash, TLS
+  flags, secret-file path, shell syntax, PITR/SNS wiring, scanner policy, and CI
+  wiring. Live AWS deployment remains unverified.
 - [ ] **P2 — Add input and capacity limits.** Cap request body, field-value,
   and loan-ID sizes; validate `Content-Type`; add `413`/`415` responses and
   `Retry-After` guidance. Document that usage-plan limits are not per-tenant
@@ -179,7 +193,7 @@ speculatively.
 ### Template distribution decision (decided 2026-11-06)
 
 - [x] **Decided: keep one self-contained template and host it through S3 when
-  needed.** `template.yaml` is now **78,196 bytes**, over the 51,200-byte direct
+  needed.** `template.yaml` is now **78,534 bytes**, over the 51,200-byte direct
   limit. `deploy.sh` auto-creates/reuses an artifact bucket and passes
   `--s3-bucket` (S3-hosted limit 1 MB); the build enforces 1,000,000 bytes and
   names the delivery mode. Direct console upload is no longer supported for this
