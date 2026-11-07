@@ -740,3 +740,18 @@ a new dated entry.
 - This verification entry is itself a docs-only follow-up commit. Its own
   CI/Pages, live bytes, and the moved `v0.1.0` tag fetch are reported in the
   delivery response; no template or code changed after the verified fix commit.
+
+## 2026-11-07 — MVP closed
+
+**MVP implementation complete.** All locally verifiable dev-doc MVP requirements
+are implemented and checked against the code, handler tests, template, deploy
+script, and CI. Live AWS deployment and live Encompass contract checks remain
+BLOCKED by missing credentials and are not claimed.
+
+- Final verified delivery before this status commit:
+  `c032f7c2fe89776357f87e62b99d0fb4db5a7406` — CI run `42332580962` green on
+  `verify (20)`, `verify (24)`, and `iac`; Pages build `1348009756` built for
+  the exact SHA; live `index.html` and `llms.txt` matched byte-for-byte; all ten
+  raw artifacts matched; `v0.1.0` was moved to it.
+- This closeout entry is a docs-only follow-up. Its own CI/Pages and live/raw
+  checks are reported in the delivery response. No code or template changed.
