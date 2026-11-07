@@ -567,3 +567,23 @@ a new dated entry.
   unverified.
 - This entry was written before the push; exact-SHA CI, Pages, raw bytes, and the
   clean-worktree check are reported in the delivery response.
+
+## 2026-11-06 — Request-ID correlation production verification
+
+- Pushed feature commit `f560219e771269f5d5d3a2884ab4a8ad394f9ff8`
+  (`feat: correlate request IDs and add operational alarms`).
+- CI run `42329139278` completed successfully on that exact SHA for Node 20 and
+  Node 24 (`verify (20)` and `verify (24)` both succeeded).
+- GitHub Pages rebuilt for the exact SHA; the latest build reported `built`
+  (created `2026-11-07T02:25:01Z`).
+- Raw `main` matched local bytes for `README.md` (24,843), `todo.md` (16,426),
+  `history.md` (37,116), `llms.txt` (9,480), and `template.yaml` (69,757).
+- The live page returned HTTP 200; live `index.html` was byte-identical at
+  28,084 bytes.
+- Not verified: an actual CloudFormation deployment, API Gateway access-log
+  delivery, CloudWatch alarm firing, and live Encompass behavior. Local tests
+  prove response headers, job/queue/log propagation, template wiring, and the
+  metadata-only format only.
+- This verification entry is itself a docs-only follow-up commit; its own CI,
+  Pages, raw `history.md`/`todo.md`, clean-worktree, and cleanup checks are
+  reported in the delivery response.
