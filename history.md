@@ -618,3 +618,23 @@ a new dated entry.
   wiring, and SECURITY.md/static links. No AWS or live Encompass access was used.
 - This entry was written before the push; exact-SHA CI, Pages, raw bytes, and the
   clean-worktree check are reported in the delivery response.
+
+## 2026-11-07 — Portal key lifecycle production verification
+
+- Pushed feature commit `cb47ed99b02b1bb210c7ee0a671672000bd8b955`
+  (`feat: protect portal key minting and lifecycle`).
+- CI run `42330287575` completed successfully on that exact SHA for Node 20 and
+  Node 24 (`verify (20)` and `verify (24)` both succeeded).
+- GitHub Pages build `1347960125` reported `built` for the exact SHA.
+- Raw artifacts at the exact SHA matched the local files: `README.md` 28,038
+  bytes, `todo.md` 17,296, `history.md` 40,275, `llms.txt` 10,587,
+  `template.yaml` 78,196, `index.html` 28,557, and `SECURITY.md` 4,839.
+- The live page returned HTTP 200 and was byte-identical to `index.html` at
+  28,557 bytes.
+- Not verified: an actual CloudFormation deployment, API Gateway stage throttle
+  enforcement, `GetApiKey` recovery, DynamoDB conditional-claim behavior, and
+  live key/usage-plan deletion. Local tests and template assertions cover the
+  handler logic, rollback paths, and wiring only.
+- This verification entry is itself a docs-only follow-up commit; its own CI,
+  Pages build, raw/live bytes, clean worktree, and cleanup checks are reported in
+  the delivery response.
