@@ -14,6 +14,30 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Enhanced-condition read/respond
 - [ ] BLOCKED: live-tenant verification of the V3 document/upload/download/condition contracts
 
+## MVP completeness audit (2026-11-07)
+
+**Status: MVP implementation complete.** Code, template, docs, and local
+verification are closed; live AWS deployment and live Encompass contract checks
+remain BLOCKED by missing credentials and are not claimed.
+
+- [x] Recovered and read the full dev doc, then derived every MVP requirement
+  from its PRD, API samples, architecture, reference handler, and verification
+  sections instead of trusting the project's summaries.
+- [x] Audited each requirement against `src/gateway.js`, `template.yaml`, the
+  handler/e2e/template tests, `deploy.sh`, and CI.
+- [x] Fixed loan reads to project nested Encompass `fields` payloads as well as
+  flat responses, preserving `{ id, fields, _cached }`; added a regression test.
+- [x] Enforced retrieve-only condition fields: `PATCH` now returns `400` for
+  `status`, `statusDate`, or `statusOpen`; added a regression test.
+- [x] Corrected the portal key copy to match idempotent recovery semantics.
+- [x] Full local gate: `npm run verify` 79/79, template in sync at 78,986 bytes
+  (SHA-256 `4e62005bcf5b85468c8d1ce75c6416493b80b50b8f4caa953a72c7fba766384e`);
+  `bash -n deploy.sh`, `git diff --check`, `cfn-lint`, and Checkov pass.
+- [x] Recorded the audit outcome in `agents.md` and `history.md`; public docs,
+  deploy pin, and release tag move with the final verified SHA.
+- [ ] BLOCKED: real CloudFormation deployment, API Gateway usage-plan/key
+  behavior, DynamoDB/SQS/KMS/SNS runtime behavior, and live Encompass contracts.
+
 ## Phase 1 — Core infrastructure & distribution
 
 - [x] Single-file CloudFormation template (`infra/template.yaml` → generated `template.yaml`)
@@ -26,7 +50,7 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Scoped IAM role (no wildcard resources for data access)
 - [x] `deploy.sh` one-line CloudShell installer with outputs (superseded: now generates three role invite codes instead of an admin token)
 - [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (50,376 bytes after 2026-11-06 field/writeability work)
-- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 78,534 bytes)
+- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 78,986 bytes)
 
 ## Phase 2 — Token management & impersonation
 
@@ -193,7 +217,7 @@ speculatively.
 ### Template distribution decision (decided 2026-11-06)
 
 - [x] **Decided: keep one self-contained template and host it through S3 when
-  needed.** `template.yaml` is now **78,534 bytes**, over the 51,200-byte direct
+  needed.** `template.yaml` is now **78,986 bytes**, over the 51,200-byte direct
   limit. `deploy.sh` auto-creates/reuses an artifact bucket and passes
   `--s3-bucket` (S3-hosted limit 1 MB); the build enforces 1,000,000 bytes and
   names the delivery mode. Direct console upload is no longer supported for this

@@ -63,7 +63,8 @@ curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
 ## Features
 
 - **Field-filtered reads** — `GET /v1/loans/{id}?fields=11,12,1109` returns only
-  what the vendor asked for, with a 30-second per-container projection cache.
+  what the vendor asked for, normalizing flat or nested Encompass field payloads
+  to `{ id, fields, _cached }`, with a 30-second per-container projection cache.
 - **Async writes** — `PATCH /v1/loans/{id}` validates and enqueues to SQS FIFO
   (grouped by loan), returns `202` + job ID, and retries Encompass file locks.
 - **Persona impersonation** — vendors get a scoped API key mapped to an Encompass
@@ -82,8 +83,10 @@ curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
   /v1/loans/{id}/attachmentUploadUrl` returns Encompass's pre-signed upload URL
   and authorization header, `POST /v1/loans/{id}/attachmentDownloadUrl` returns
   download URLs and their authorization headers, and `GET`/`PATCH
-  /v1/loans/{id}/conditions` read and respond to enhanced conditions. File bytes
-  move directly between the vendor and Encompass storage.
+  /v1/loans/{id}/conditions` read and respond to enhanced conditions. Condition
+  `PATCH` rejects retrieve-only `status`, `statusDate`, and `statusOpen`; respond
+  through `tracking`/`internalDescription`. File bytes move directly between the
+  vendor and Encompass storage.
 - **Zero-dependency portal** — one Lambda renders the invite page, provisions
   keys, attaches them to the usage plan, and stores the tenant mapping.
 - **One-file deployment** — the whole stack lives in a single CloudFormation
@@ -150,6 +153,9 @@ Storage: DynamoDB tenants + persona tokens + jobs (TTL) · Secrets Manager (clie
 | `GET` | `/v1/loans/{id}/conditions?conditionType=Underwriting` | `x-api-key` | `{ loanId, conditions: [...] }` (enhanced conditions) |
 | `PATCH` | `/v1/loans/{id}/conditions` body `[{ "id": "...", "tracking": [{ "status": "Received", "isChecked": true }] }]` | `x-api-key` | `{ loanId, updated }` |
 | `GET` | `/v1/jobs/{id}` | `x-api-key` | `{ jobId, requestId, loanId, status, attempts, createdAt, updatedAt, error }` |
+
+Condition `PATCH` accepts `tracking` and `internalDescription` updates and returns
+`400` for retrieve-only `status`, `statusDate`, or `statusOpen`.
 
 Job statuses: `PENDING` → `RETRYING` → `COMPLETED` / `FAILED`.
 Every response includes `x-request-id`. Write jobs store the originating request
@@ -264,13 +270,14 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 77 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
+npm test          # 79 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```
 
 Coverage highlights: token exchange and cache reuse/expiry, tenant isolation,
-field projection and validation, writeability metadata, inactive-tenant rejection,
+field projection (including nested payloads) and validation, retrieve-only
+condition rejection, writeability metadata, inactive-tenant rejection,
 idempotent portal provisioning, concurrent-claim rejection, rollback of a new key
 when tenant mapping fails, disabled-key rejection, the stage throttle and IAM
 wiring for portal key minting, and the deploy-script TLS/checksum/secret-file
@@ -490,7 +497,7 @@ remaining deletion, alarm, and offboarding work.
 - `/v1/fields` exposes read-only metadata. Optional `TitleWriteFields`,
   `BrokerWriteFields`, and `AppraisalWriteFields` parameters add a gateway-level
   write allowlist; Encompass persona permissions remain the authorization control.
-- The template is 78,534 bytes, over CloudFormation's 51,200-byte direct-upload
+- The template is 78,986 bytes, over CloudFormation's 51,200-byte direct-upload
   limit. Use `deploy.sh` (S3-hosted) or upload the template to S3 yourself; the
   S3-hosted limit is 1,000,000 bytes.
 - Access logging configures one account-wide API Gateway CloudWatch role

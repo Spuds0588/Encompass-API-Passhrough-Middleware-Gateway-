@@ -104,7 +104,7 @@
             "name": "Can a broker read documents and respond to conditions?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, returns pre-signed download URLs, and reads or responds to enhanced conditions. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them."
+              "text": "Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, returns pre-signed download URLs, and reads or responds to enhanced conditions. Condition PATCH rejects retrieve-only status, statusDate, and statusOpen fields; tracking and internalDescription are writeable. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them."
             }
           },
           {
@@ -349,7 +349,7 @@
           </article>
           <article class="card">
             <h3>Documents &amp; conditions</h3>
-            <p><code>GET /v1/loans/{id}/documents</code>, <code>POST /v1/loans/{id}/attachmentUploadUrl</code>, <code>POST /v1/loans/{id}/attachmentDownloadUrl</code>, and <code>GET</code>/<code>PATCH /v1/loans/{id}/conditions</code> cover eFolder documents and enhanced conditions. File bytes go straight to and from Encompass.</p>
+            <p><code>GET /v1/loans/{id}/documents</code>, <code>POST /v1/loans/{id}/attachmentUploadUrl</code>, <code>POST /v1/loans/{id}/attachmentDownloadUrl</code>, and <code>GET</code>/<code>PATCH /v1/loans/{id}/conditions</code> cover eFolder documents and enhanced conditions. Condition PATCH rejects retrieve-only status fields; tracking and internalDescription are writeable. File bytes go straight to and from Encompass.</p>
           </article>
         </div>
       </section>
@@ -379,7 +379,7 @@
               <tr><td><code>POST</code></td><td><code>/v1/loans/{id}/attachmentUploadUrl</code></td><td>Start a pre-signed attachment upload</td></tr>
               <tr><td><code>POST</code></td><td><code>/v1/loans/{id}/attachmentDownloadUrl</code></td><td>Get pre-signed attachment download URLs</td></tr>
               <tr><td><code>GET</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Read enhanced loan conditions</td></tr>
-              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Respond to a condition and move its status</td></tr>
+              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Respond to a condition via tracking; retrieve-only status fields rejected</td></tr>
               <tr><td><code>GET</code></td><td><code>/v1/jobs/{id}</code></td><td>Job status, scoped to the owning tenant</td></tr>
             </tbody>
           </table>
@@ -457,7 +457,7 @@
         </details>
         <details>
           <summary>Can a broker read documents and respond to conditions?</summary>
-          <p>Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, returns pre-signed download URLs, and reads or responds to enhanced conditions. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them.</p>
+          <p>Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, returns pre-signed download URLs, and reads or responds to enhanced conditions. Condition PATCH rejects retrieve-only status, statusDate, and statusOpen fields; tracking and internalDescription are writeable. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them.</p>
         </details>
         <details>
           <summary>What license is the project under?</summary>

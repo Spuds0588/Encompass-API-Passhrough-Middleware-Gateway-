@@ -85,7 +85,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 77 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 79 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -113,7 +113,9 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - API responses are `Cache-Control: no-store` except reads, which use
   `private, max-age=30` (never `public`: responses are tenant-scoped by API key).
   All responses include `x-request-id`.
-- Reads project only requested fields and cap field lists at 100.
+- Reads project only requested fields and cap field lists at 100. Encompass may
+  return field IDs flat or under a `fields` object; normalize both to the public
+  `{ id, fields, _cached }` shape.
 - `/v1/fields` splits standard (`CX.`/`CUSTnnFV` excluded) and custom IDs, calls
   `schemas/loan/standardFields` and `settings/loan/customFields`, and normalizes
   results to `{ id: { description, type, readOnly?, fieldLock? } }`; the last two
@@ -134,7 +136,8 @@ npm run dev       # local gateway at :3000 with fake Encompass
   `authorizationHeader` are short-lived credentials; never log or cache them.
 - Conditions use native V3 `/conditions`; PATCH sends `?action=update` with an
   array of `{ id, ... }`. Only enhanced conditions are proxied; `status`,
-  `statusDate`, and `statusOpen` are retrieve-only and must not be written.
+  `statusDate`, and `statusOpen` are retrieve-only, and PATCH rejects any update
+  containing them with `400`.
 - Document, upload, download, and condition responses are `no-store` and are
   never cached.
 - Tests must not require AWS or Encompass. Use the dev fakes and close every
@@ -216,7 +219,7 @@ npm run dev       # local gateway at :3000 with fake Encompass
   (`.github/workflows/ci.yml`) and by fetching the pinned release tag's raw
   `template.yaml` from GitHub, which is exactly what `deploy.sh` downloads.
 - `scripts/build.js` compacts the inlined deploy copy and enforces 1,000,000
-  bytes. The template is 78,534 bytes, above CloudFormation's 51,200-byte direct
+  bytes. The template is 78,986 bytes, above CloudFormation's 51,200-byte direct
   limit, so `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket`
   (S3-hosted limit: 1 MB). Keep the source formatted; do not hand-edit
   `template.yaml`.
@@ -227,3 +230,34 @@ npm run dev       # local gateway at :3000 with fake Encompass
   and PUT the bytes to its URL, then `GET`/`PATCH /v1/loans/{id}/conditions` and
   re-read to confirm the status. Repeat with a mismatched role link to confirm
   rejection.
+
+## MVP completeness audit (2026-11-07)
+
+**Outcome: MVP implementation complete.** The audit was derived from the
+recovered dev doc, not from the project's own summaries, and checked every stated
+endpoint, auth rule, cache/retry behavior, portal flow, logging rule, template
+resource, and verification gate against the handler, tests, template, and CI.
+
+Fixed gaps found by the audit:
+
+- Loan reads now project from either a flat Encompass response or a nested
+  `fields` object, then return the documented `{ id, fields, _cached }` shape.
+- Condition `PATCH` now rejects `status`, `statusDate`, and `statusOpen` with
+  `400` instead of forwarding retrieve-only fields; `tracking` and
+  `internalDescription` remain writeable.
+- The portal no longer claims an idempotently recoverable key will never be
+  shown again; it explains that plaintext is never stored and repeats recover it.
+
+Not defects / deliberate MVP decisions:
+
+- The dev doc's "exponential backoff" is provided by the AWS SQS event source's
+  native retry backoff with `maxReceiveCount: 5`; no custom retry loop was added.
+- The dev doc's public read cache is deliberately `private` because responses are
+  tenant-scoped.
+- Event-source concurrency is 5, stricter than the diagram's 10; the usage plan
+  remains 50 rps / 100 burst.
+- Live AWS and Encompass behavior remains unverified; see `todo.md` BLOCKED items.
+
+Local evidence: `npm run verify` passes 79/79 with the template in sync at
+78,986 bytes; `bash -n deploy.sh`, `git diff --check`, `cfn-lint`, and Checkov
+pass; no server, scanner, or dependency residue remains.

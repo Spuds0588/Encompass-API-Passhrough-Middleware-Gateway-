@@ -105,8 +105,10 @@ function startFakeEncompass({
   tokenTtlSeconds = 1800,
   documents = DEFAULT_DOCUMENTS,
   conditions = DEFAULT_CONDITIONS,
+  nestedFields = false,
 } = {}) {
   const state = {
+    nestedFields,
     tokenExchanges: 0,
     reads: 0,
     writes: 0,
@@ -404,7 +406,10 @@ function startFakeEncompass({
 
     if (req.method === "GET") {
       state.reads += 1;
-      return loan ? send(res, 200, loan) : send(res, 404, { error: "loan_not_found" });
+      if (!loan) return send(res, 404, { error: "loan_not_found" });
+      if (!state.nestedFields) return send(res, 200, loan);
+      const { id, ...fields } = loan;
+      return send(res, 200, { id, fields });
     }
 
     if (req.method === "PATCH") {

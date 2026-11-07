@@ -30,6 +30,7 @@ const MAX_DOWNLOAD_IDS = 20;
 const MAX_BODY_BYTES = 10_000;
 const DOCUMENT_QUERY_KEYS = ["requireActiveAttachments", "includeRemoved", "view", "start", "limit"];
 const CONDITION_QUERY_KEYS = ["conditionType", "includeRemoved", "view", "start", "limit"];
+const READ_ONLY_CONDITION_FIELDS = ["status", "statusDate", "statusOpen"];
 const SCHEMA_CACHE_TTL_MS = 5 * 60_000;
 const SCHEMA_CACHE_MAX_ENTRIES = 200;
 const STANDARD_FIELDS_PATH = "/encompass/v3/schemas/loan/standardFields";
@@ -475,8 +476,11 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     }
 
     const projected = {};
+    const source = loan && loan.fields && typeof loan.fields === "object" && !Array.isArray(loan.fields)
+      ? loan.fields
+      : loan;
     for (const field of fields) {
-      if (loan && loan[field] !== undefined) projected[field] = loan[field];
+      if (source && source[field] !== undefined) projected[field] = source[field];
     }
     const body = { id: (loan && loan.id) || loanId, fields: projected, _cached: false };
     readCache.set(cacheKey, { body, expiresAt: now() + READ_CACHE_TTL_MS });
@@ -692,6 +696,9 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
         update.id.length > 100
       ) {
         return error(400, "Each condition update requires a valid id");
+      }
+      if (READ_ONLY_CONDITION_FIELDS.some((field) => Object.hasOwn(update, field))) {
+        return error(400, "condition status fields are retrieve-only");
       }
     }
 
@@ -1112,7 +1119,7 @@ function renderPortal({ role, error } = {}) {
 
   <section id="result" class="ok hidden">
     <h2>Key provisioned successfully</h2>
-    <p class="hint">Copy this key now. It is not stored in plaintext and will not be shown again.</p>
+    <p class="hint">Copy this key now. It is never stored in plaintext; a repeat submission with the same company and email recovers it.</p>
     <div class="keyrow">
       <input id="apiKey" readonly>
       <button id="copy" type="button">Copy</button>

@@ -109,6 +109,20 @@ test("GET loan returns only the requested fields", async () => {
   assert.equal(fake.state.tokenExchanges, 1);
 });
 
+test("GET loan projects fields from nested Encompass responses", async () => {
+  fake.state.nestedFields = true;
+  const response = await handler(
+    httpEvent({ path: "/v1/loans/loan-1", query: { fields: "11,1109,CX.TITLE.STATUS" } }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(parse(response).fields, {
+    11: "123 Main St",
+    1109: 450000,
+    "CX.TITLE.STATUS": "Received",
+  });
+});
+
 test("second read within the TTL is served from the container cache", async () => {
   const first = await handler(httpEvent({ path: "/v1/loans/loan-1", query: { fields: "11,12" } }));
   const second = await handler(httpEvent({ path: "/v1/loans/loan-1", query: { fields: "11,12" } }));
@@ -395,6 +409,8 @@ test("portal landing requires an invite link and publishes the field cheat sheet
   assert.match(response.body, /646/);
   assert.match(response.body, /CX\.YOUR\.FIELD/);
   assert.doesNotMatch(response.body, /admin token/i);
+  assert.doesNotMatch(response.body, /will not be shown again/i);
+  assert.match(response.body, /never stored in plaintext/);
 });
 
 test("portal renders a persona-locked form for a valid invite", async () => {
@@ -727,6 +743,25 @@ test("condition update validates the array and maps unknown conditions", async (
     httpEvent({ method: "PATCH", path: "/v1/loans/loan-1/conditions", body: [{ id: "condition-missing" }] }),
   );
   assert.equal(missing.statusCode, 404);
+});
+
+test("condition update rejects retrieve-only status fields", async () => {
+  for (const [field, value] of Object.entries({
+    status: "Cleared",
+    statusDate: "2026-11-07T00:00:00Z",
+    statusOpen: false,
+  })) {
+    const response = await handler(
+      httpEvent({
+        method: "PATCH",
+        path: "/v1/loans/loan-1/conditions",
+        body: [{ id: "condition-1", [field]: value }],
+      }),
+    );
+    assert.equal(response.statusCode, 400, field);
+    assert.match(parse(response).error, /retrieve-only/);
+  }
+  assert.equal(fake.state.conditionUpdates, 0);
 });
 
 test("per-role write allowlist rejects fields outside the role", async () => {

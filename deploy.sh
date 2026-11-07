@@ -31,7 +31,7 @@ NC='\033[0m'
 
 STACK_NAME="${STACK_NAME:-Encompass-API-Gateway}"
 TEMPLATE_REF="${TEMPLATE_REF:-v0.1.0}"
-TEMPLATE_SHA256="${TEMPLATE_SHA256:-af75648d5a2382385dbad879076b7965526c6ce6698ca8f3a67ba4c3228e81fe}"
+TEMPLATE_SHA256="${TEMPLATE_SHA256:-4e62005bcf5b85468c8d1ce75c6416493b80b50b8f4caa953a72c7fba766384e}"
 TEMPLATE_URL="${TEMPLATE_URL:-https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/${TEMPLATE_REF}/template.yaml}"
 
 say() { printf '%b\n' "$1"; }
