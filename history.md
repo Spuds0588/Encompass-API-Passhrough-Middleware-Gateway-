@@ -725,3 +725,18 @@ a new dated entry.
   BLOCKED; they are not claimed as verified.
 - Pending at this entry: commit, push, exact-SHA CI/Pages checks, tag move, and
   raw/live artifact verification.
+
+## 2026-11-07 — MVP audit delivery verification
+
+- Pushed the audit fix commit `c72904609bb5942d6a7633f7373cbf70be07c060`.
+- CI run `42332484211` completed successfully on that exact SHA for
+  `verify (20)`, `verify (24)`, and `iac`.
+- GitHub Pages build `1348007904` reported `built` for that exact SHA.
+- Every commit-pinned raw artifact matched locally byte-for-byte: `README.md`,
+  `todo.md`, `history.md`, `agents.md`, `llms.txt`, `template.yaml` (78,986
+  bytes, SHA-256
+  `4e62005bcf5b85468c8d1ce75c6416493b80b50b8f4caa953a72c7fba766384e`),
+  `index.html`, `SECURITY.md`, `deploy.sh`, and `.checkov.yaml`.
+- This verification entry is itself a docs-only follow-up commit. Its own
+  CI/Pages, live bytes, and the moved `v0.1.0` tag fetch are reported in the
+  delivery response; no template or code changed after the verified fix commit.
