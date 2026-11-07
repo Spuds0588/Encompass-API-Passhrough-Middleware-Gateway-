@@ -63,7 +63,22 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     assert.equal(provisioned.status, 200);
     assert.equal(provisioned.body.encompassUserId, "api_title_template");
     const apiKey = provisioned.body.apiKey;
+    assert.equal(provisioned.body.reused, false);
     assert.ok(apiKey);
+
+    const provisionedAgain = await request(`${gateway.url}/portal`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tenantName: "Acme Title",
+        email: "dev@acme.test",
+        role: "title",
+        code: gateway.invites.title.code,
+      }),
+    });
+    assert.equal(provisionedAgain.status, 200);
+    assert.equal(provisionedAgain.body.reused, true);
+    assert.equal(provisionedAgain.body.apiKey, apiKey);
 
     const noKey = await request(`${gateway.url}/v1/loans/loan-1?fields=11,12`);
     assert.equal(noKey.status, 403);

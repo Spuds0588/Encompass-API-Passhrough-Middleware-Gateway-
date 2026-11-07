@@ -304,6 +304,7 @@
         <ul class="quickfacts">
           <li>One CloudFormation file</li>
           <li>Vendor-owned API keys</li>
+          <li>Idempotent portal key minting</li>
           <li>No loan database or mirror</li>
           <li>Node.js 24 on Lambda</li>
         </ul>
@@ -312,6 +313,7 @@
       <section class="community" id="community" aria-labelledby="community-title">
         <h2 id="community-title">Built in public. Tested by the community.</h2>
         <p><strong>This is a community-supported template, not a vendor-hosted product.</strong> The maintainers cannot spin up a live Encompass developer instance or a lender AWS account to reproduce every environment, field shape, or tenant configuration. Real-world validation is a shared responsibility.</p>
+        <p><strong>Security:</strong> report unpatched vulnerabilities privately through the GitHub advisory flow in <a href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/SECURITY.md">SECURITY.md</a>. Do not open a public issue with exploit details, secrets, loan data, API keys, or invite codes. The same policy covers invite rotation, key disable/delete, and orphan-key cleanup.</p>
         <p>If something breaks, please upstream what you learn so the next lender does not hit the same bug.</p>
         <p>Bugs, field-shape corrections, and fixes are a shared responsibility: file them as GitHub issues or pull requests with sanitized evidence (redacted field shapes, deployment or log excerpts), never secrets or PII. Privately-patched forks are discouraged. Do not claim live Encompass or AWS verification that did not happen.</p>
         <ul>

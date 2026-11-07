@@ -12,7 +12,7 @@
  */
 
 const { AsyncLocalStorage } = require("node:async_hooks");
-const { randomUUID, timingSafeEqual } = require("node:crypto");
+const { createHash, randomUUID, timingSafeEqual } = require("node:crypto");
 
 const DEFAULT_FIELDS = "11,12,14,1109";
 const MAX_FIELDS = 100;
@@ -21,6 +21,8 @@ const READ_CACHE_TTL_MS = 30_000;
 const READ_CACHE_MAX_ENTRIES = 500;
 const MAX_ATTEMPTS = 5;
 const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
+const PROVISIONING_LOCK_TTL_SECONDS = 15 * 60;
+const PROVISIONING_TTL_SECONDS = 24 * 60 * 60;
 const FIELD_ID = /^[A-Za-z0-9._]+$/;
 const CONDITION_ID = /^[A-Za-z0-9._:-]+$/;
 const MAX_CONDITION_UPDATES = 20;
@@ -89,6 +91,12 @@ function safeEqual(a, b) {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function provisioningKeyFor(role, tenantName, email) {
+  return createHash("sha256")
+    .update(`${role}|${tenantName.trim().toLowerCase()}|${email.trim().toLowerCase()}`)
+    .digest("hex");
 }
 
 function header(event, name) {
@@ -723,24 +731,152 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       return error(400, "A valid email is required");
     }
 
-    const key = await store.createApiKey({ tenantName, encompassUserId: config.persona });
-    await store.putTenant({
+    const provisioningKey = provisioningKeyFor(role, tenantName, email);
+    const createdAt = new Date(now()).toISOString();
+    let claimed;
+    try {
+      claimed = await store.claimProvisioning({
+        provisioningKey,
+        status: "PENDING",
+        createdAt,
+        updatedAt: createdAt,
+        ttl: Math.floor(now() / 1000) + PROVISIONING_LOCK_TTL_SECONDS,
+      });
+    } catch (err) {
+      log("ERROR", "PROVISIONING_CLAIM_FAILED", { requestId, message: err.message });
+      return error(503, "Provisioning unavailable; retry shortly");
+    }
+    if (!claimed) return reuseProvisioning(provisioningKey, requestId);
+
+    let key;
+    try {
+      key = await store.createApiKey({ tenantName, encompassUserId: config.persona });
+    } catch (err) {
+      log("ERROR", "TENANT_PROVISION_FAILED", { requestId, stage: "api_key", message: err.message });
+      await releaseProvisioningClaim(provisioningKey);
+      return error(503, "API key provisioning unavailable; retry shortly");
+    }
+
+    const tenant = {
       apiKeyId: key.id,
+      provisioningKey,
       tenantName,
       email,
       role,
       encompassUserId: config.persona,
       status: "ACTIVE",
-      createdAt: new Date(now()).toISOString(),
-    });
-    log("INFO", "TENANT_PROVISIONED", { tenantName, role, apiKeyId: key.id });
+      createdAt,
+    };
+    try {
+      await store.putTenant(tenant);
+    } catch (err) {
+      log("ERROR", "TENANT_PROVISION_FAILED", { requestId, stage: "tenant", message: err.message });
+      await rollbackProvisioning(key.id, provisioningKey, requestId, "tenant");
+      return error(503, "Tenant provisioning failed; no key was retained");
+    }
+
+    try {
+      await store.putProvisioning({
+        provisioningKey,
+        status: "COMPLETE",
+        apiKeyId: key.id,
+        createdAt,
+        updatedAt: new Date(now()).toISOString(),
+        ttl: Math.floor(now() / 1000) + PROVISIONING_TTL_SECONDS,
+      });
+    } catch (err) {
+      log("ERROR", "PROVISIONING_RECORD_UPDATE_FAILED", { requestId, apiKeyId: key.id, message: err.message });
+    }
+
+    log("INFO", "TENANT_PROVISIONED", { requestId, tenantName, role, apiKeyId: key.id });
     return json(200, {
       message: "Tenant provisioned successfully",
       apiKey: key.value,
+      apiKeyId: key.id,
       tenantName,
       email,
       role,
       encompassUserId: config.persona,
+      reused: false,
+    });
+  }
+
+  async function releaseProvisioningClaim(provisioningKey) {
+    try {
+      await store.deleteProvisioning(provisioningKey);
+    } catch (err) {
+      log("ERROR", "PROVISIONING_CLAIM_RELEASE_FAILED", { message: err.message });
+    }
+  }
+
+  async function rollbackProvisioning(apiKeyId, provisioningKey, requestId, stage) {
+    let keyDeleted = false;
+    try {
+      await store.deleteApiKey(apiKeyId);
+      keyDeleted = true;
+    } catch (err) {
+      log("ERROR", "API_KEY_ORPHANED", { requestId, apiKeyId, stage, message: err.message });
+    }
+    if (keyDeleted) await releaseProvisioningClaim(provisioningKey);
+    log("ERROR", "TENANT_PROVISION_ROLLED_BACK", { requestId, apiKeyId, stage, keyDeleted });
+  }
+
+  async function reuseProvisioning(provisioningKey, requestId) {
+    let record;
+    try {
+      record = await store.getProvisioning(provisioningKey);
+    } catch (err) {
+      log("ERROR", "PROVISIONING_STATE_READ_FAILED", { requestId, message: err.message });
+      return error(503, "Provisioning state unavailable; retry shortly");
+    }
+    if (!record) {
+      return error(409, "Provisioning is already in progress; retry shortly", { code: "PROVISIONING_IN_PROGRESS" });
+    }
+    if (record.status !== "COMPLETE" || !record.apiKeyId) {
+      log("WARN", "PROVISIONING_IN_PROGRESS", { requestId });
+      return error(409, "Provisioning is already in progress; retry shortly", { code: "PROVISIONING_IN_PROGRESS" });
+    }
+
+    let tenant;
+    try {
+      tenant = await store.getTenant(record.apiKeyId);
+    } catch (err) {
+      log("ERROR", "PROVISIONING_TENANT_READ_FAILED", { requestId, message: err.message });
+      return error(503, "Provisioning state unavailable; retry shortly");
+    }
+    if (!tenant) {
+      return error(409, "Provisioning record has no tenant mapping; use the lifecycle runbook", { code: "PROVISIONING_INCONSISTENT" });
+    }
+    if (tenant.status !== "ACTIVE") {
+      return error(409, "Tenant is inactive; use the key/invite lifecycle runbook", { code: "TENANT_INACTIVE" });
+    }
+
+    let key = null;
+    try {
+      key = await store.getApiKey(record.apiKeyId);
+    } catch (err) {
+      if (err.name !== "NotFoundException") {
+        log("ERROR", "PROVISIONING_KEY_READ_FAILED", { requestId, apiKeyId: record.apiKeyId, message: err.message });
+        return error(503, "Existing API key lookup failed; retry shortly");
+      }
+    }
+    if (!key || key.enabled === false || !key.value) {
+      return error(409, "Existing API key is unavailable; use the key rotation runbook", {
+        code: "API_KEY_UNAVAILABLE",
+        apiKeyId: record.apiKeyId,
+      });
+    }
+
+    log("INFO", "TENANT_PROVISION_REUSED", { requestId, role: tenant.role, apiKeyId: record.apiKeyId });
+    return json(200, {
+      message: "Tenant already provisioned; existing API key returned",
+      apiKey: key.value,
+      apiKeyId: record.apiKeyId,
+      tenantName: tenant.tenantName,
+      email: tenant.email,
+      role: tenant.role,
+      encompassUserId: tenant.encompassUserId,
+      reused: true,
     });
   }
 
@@ -1093,7 +1229,7 @@ function renderPortal({ role, error } = {}) {
 }
 function createAwsStore(env = process.env) {
   const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-  const { DynamoDBDocumentClient, GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
+  const { DynamoDBDocumentClient, DeleteCommand, GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
   const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
   const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
   const {
@@ -1101,6 +1237,8 @@ function createAwsStore(env = process.env) {
     CreateApiKeyCommand,
     CreateUsagePlanKeyCommand,
     DeleteApiKeyCommand,
+    DeleteUsagePlanKeyCommand,
+    GetApiKeyCommand,
   } = require("@aws-sdk/client-api-gateway");
 
   const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -1120,6 +1258,33 @@ function createAwsStore(env = process.env) {
     async putTenant(item) {
       await ddb.send(new PutCommand({ TableName: env.TENANT_TABLE, Item: item }));
     },
+    async claimProvisioning(item) {
+      try {
+        await ddb.send(new PutCommand({
+          TableName: env.PROVISIONING_TABLE,
+          Item: item,
+          ConditionExpression: "attribute_not_exists(provisioningKey)",
+        }));
+        return true;
+      } catch (err) {
+        if (err.name === "ConditionalCheckFailedException") return false;
+        throw err;
+      }
+    },
+    async getProvisioning(provisioningKey) {
+      const res = await ddb.send(new GetCommand({
+        TableName: env.PROVISIONING_TABLE,
+        Key: { provisioningKey },
+        ConsistentRead: true,
+      }));
+      return res.Item || null;
+    },
+    async putProvisioning(item) {
+      await ddb.send(new PutCommand({ TableName: env.PROVISIONING_TABLE, Item: item }));
+    },
+    async deleteProvisioning(provisioningKey) {
+      await ddb.send(new DeleteCommand({ TableName: env.PROVISIONING_TABLE, Key: { provisioningKey } }));
+    },
     async getToken(encompassUserId) {
       const res = await ddb.send(new GetCommand({ TableName: env.TOKEN_TABLE, Key: { encompassUserId } }));
       return res.Item || null;
@@ -1133,6 +1298,22 @@ function createAwsStore(env = process.env) {
     },
     async putJob(item) {
       await ddb.send(new PutCommand({ TableName: env.JOB_TABLE, Item: item }));
+    },
+    async getApiKey(apiKeyId) {
+      const res = await apiGateway.send(new GetApiKeyCommand({ apiKey: apiKeyId, includeValue: true }));
+      return { id: res.id, value: res.value, enabled: res.enabled };
+    },
+    async deleteApiKey(apiKeyId) {
+      try {
+        await apiGateway.send(new DeleteUsagePlanKeyCommand({
+          usagePlanId: env.USAGE_PLAN_ID,
+          keyId: apiKeyId,
+          keyType: "API_KEY",
+        }));
+      } catch (err) {
+        if (err.name !== "NotFoundException") throw err;
+      }
+      await apiGateway.send(new DeleteApiKeyCommand({ apiKey: apiKeyId }));
     },
     async enqueueWrite(message) {
       await sqs.send(new SendMessageCommand({
@@ -1156,7 +1337,9 @@ function createAwsStore(env = process.env) {
           keyType: "API_KEY",
         }));
       } catch (err) {
-        await apiGateway.send(new DeleteApiKeyCommand({ apiKey: created.id })).catch(() => {});
+        await apiGateway.send(new DeleteApiKeyCommand({ apiKey: created.id })).catch((cleanupErr) => {
+          log("ERROR", "API_KEY_ORPHANED", { apiKeyId: created.id, message: cleanupErr.message });
+        });
         throw err;
       }
       return { id: created.id, value: created.value };

@@ -99,6 +99,22 @@ Resources:
       SSESpecification:
         SSEEnabled: true
 
+  ProvisioningTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: provisioningKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: provisioningKey
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
   TokensTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -240,8 +256,10 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
+                  - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt TenantsTable.Arn
+                  - !GetAtt ProvisioningTable.Arn
                   - !GetAtt TokensTable.Arn
                   - !GetAtt JobsTable.Arn
               - Effect: Allow
@@ -262,6 +280,13 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apikeys"
                   - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/usageplans/${UsagePlan}/keys"
+              - Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:DELETE
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apikeys/*"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/usageplans/${UsagePlan}/keys/*"
               - Effect: Allow
                 Action:
                   - logs:CreateLogStream
@@ -295,6 +320,7 @@ Resources:
       Environment:
         Variables:
           TENANT_TABLE: !Ref TenantsTable
+          PROVISIONING_TABLE: !Ref ProvisioningTable
           TOKEN_TABLE: !Ref TokensTable
           JOB_TABLE: !Ref JobsTable
           WRITE_QUEUE_URL: !Ref WriteQueue
@@ -449,6 +475,11 @@ Resources:
         DestinationArn: !GetAtt ApiAccessLogGroup.Arn
         Format: >-
           {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength","apiKeyId":"$context.identity.apiKeyId"}
+      MethodSettings:
+        - ResourcePath: "/portal"
+          HttpMethod: POST
+          ThrottlingRateLimit: 1
+          ThrottlingBurstLimit: 2
 
   UsagePlan:
     Type: AWS::ApiGateway::UsagePlan

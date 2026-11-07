@@ -8,6 +8,7 @@
 - [README](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/README.md): deployment, API, security, and known limitations.
 - [Agent directions](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/agents.md): operating manual for coding agents and maintainers.
 - [Contributing guide](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/CONTRIBUTING.md): bug reports, pull requests, tests, and redaction rules.
+- [Security policy](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/blob/main/SECURITY.md): private vulnerability reporting, key disable/delete, invite rotation, and orphan cleanup.
 - [Source code](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-): the deployed Lambda, template, tests, installer, and local fakes.
 - [Open issues](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/issues): check for an existing report before opening a new one.
 - [Pull requests](https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/pulls): fixes, tests, docs, and sanitized field-shape fixtures are welcome.
@@ -21,7 +22,8 @@
 - Reads ICE Encompass loan fields on demand and returns only the requested projection. Reads are cached for 30 seconds per persona in Lambda memory.
 - Queues writes asynchronously through SQS FIFO, grouped by loan, and retries Encompass file locks, throttling, and 5xx responses up to five attempts.
 - Correlates each request end to end with `x-request-id` across HTTP responses, job records, SQS messages, worker logs, metadata-only access logs, and Lambda/API 5xx alarms.
-- Provides role-scoped invite onboarding for title/settlement, TPO/broker, and AMC/appraisal partners. The server chooses the Encompass persona from the role; clients cannot choose it.
+- Provides role-scoped invite onboarding for title/settlement, TPO/broker, and AMC/appraisal partners. The server chooses the Encompass persona from the role; clients cannot choose it. Invite codes are shared per role, not single-use, and `POST /portal` is throttled to 1 rps / burst 2.
+- Makes portal key minting idempotent per normalized role + company + email. A conditional DynamoDB claim blocks concurrent double-mints; repeats return the same key via API Gateway `GetApiKey(includeValue=true)`, and plaintext keys are never stored. Partial failures delete the key and release the claim; unrecoverable cleanup is logged as `API_KEY_ORPHANED` for the `SECURITY.md` runbook.
 - Proxies the native standard and custom field schema APIs through `GET /v1/fields?ids=...`, including `readOnly` and `fieldLock` when Encompass supplies them.
 - Lists eFolder documents, initiates native pre-signed attachment uploads, gets pre-signed download URLs, and reads or responds to enhanced conditions. File bytes go directly between the vendor and Encompass storage; the gateway never proxies them.
 - Keeps no loan database or mirror. It stores tenant mappings, short-lived persona tokens, and job metadata; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days), and read projections stay in memory for up to 30 seconds.
@@ -30,7 +32,7 @@
 
 - `GET /health`
 - `GET /portal` and `GET /portal?role=title&code=...`
-- `POST /portal` with `role`, `code`, `tenantName`, and `email`
+- `POST /portal` with `role`, `code`, `tenantName`, and `email` — idempotent; a repeat returns `reused: true` and the same `apiKey`
 - `GET /v1/fields?ids=11,646,CX.TITLE.STATUS` — definitions plus `readOnly`/`fieldLock` when provided
 - `GET /v1/loans/{loanId}?fields=11,12,1109`
 - `PATCH /v1/loans/{loanId}` with a `fields` object
@@ -56,6 +58,7 @@ All `/v1/*` routes require `x-api-key`. The portal and health check are the only
 
 - This project is shared infrastructure, not a paid supported product. If you deploy it, you are part of the testing community.
 - Bugs, field-shape corrections, and fixes are a shared responsibility: file them as GitHub issues or pull requests with sanitized evidence (redacted field shapes, deployment or log excerpts), never secrets or PII. Privately-patched forks are discouraged. Do not claim live Encompass or AWS verification that did not happen.
+- Report unpatched vulnerabilities through the private advisory flow in `SECURITY.md`; do not open a public issue with exploit details. Rotate invites and disable/delete keys using that policy.
 - Check existing GitHub issues before reporting. Include the commit, Node version, a minimal reproduction, expected versus actual behavior, sanitized logs, and whether the issue is reproducible with the local fake.
 - Never include client secrets, API keys, invite codes, OAuth tokens, loan data, or personal information in an issue, pull request, screenshot, or log.
 - If you find and fix a bug in a private deployment, upstream the smallest fix with a regression test. Do not leave the fix only in a fork.
@@ -75,8 +78,8 @@ All `/v1/*` routes require `x-api-key`. The portal and health check are the only
 
 ## Verification status and limitations
 
-- Verified locally and in CI: handler routing, invite validation and persona locking, field schema lookup and caching, reads and projections, async writes, retry behavior, request-ID correlation across responses/jobs/SQS/worker logs, eFolder document reads, pre-signed attachment upload initiation, pre-signed download URLs plus real byte downloads, enhanced-condition read/respond, template sync, and template limits.
-- Not verified by the maintainers: a real CloudFormation deployment, API Gateway key creation, DynamoDB/SQS behavior, live Encompass OAuth, loan reads/writes, and the exact standard/custom schema response shape for every Encompass tenant.
+- Verified locally and in CI: handler routing, invite validation and persona locking, idempotent portal provisioning with rollback, portal method throttling in the template, field schema lookup and caching, reads and projections, async writes, retry behavior, request-ID correlation across responses/jobs/SQS/worker logs, eFolder document reads, pre-signed attachment upload initiation, pre-signed download URLs plus real byte downloads, enhanced-condition read/respond, template sync, and template limits.
+- Not verified by the maintainers: a real CloudFormation deployment, API Gateway key creation/GetApiKey recovery, stage method-throttle enforcement, DynamoDB/SQS behavior, live Encompass OAuth, loan reads/writes, and the exact standard/custom schema response shape for every Encompass tenant.
 - Known limitations: one shared usage plan, global per-role invite codes rather than single-use vendor invites, no revocation UI, no CORS, and a curated 11-field cheat sheet whose custom fields only appear through a live schema lookup.
 - Broker scope covers field-level reads/writes, eFolder document listing, pre-signed attachment upload initiation and download URLs, and enhanced-condition read/respond. There is no structured 1003/application resource, no standard (V1) condition API, no document create/update/remove, and no multi-chunk upload orchestration. `PATCH` accepts at most 100 fields per job and is not transactional across jobs.
 - The committed template is about 68 KB, so `deploy.sh` uploads it to S3 automatically; direct CloudFormation upload is capped at 51,200 bytes and the S3-hosted limit is 1,000,000 bytes.

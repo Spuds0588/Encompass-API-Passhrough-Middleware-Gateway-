@@ -11,7 +11,7 @@ const REPO = "https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-G
 const PAGE = "https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/";
 
 test("community documents exist and point contributors at GitHub", () => {
-  for (const file of ["agents.md", "CONTRIBUTING.md", "llms.txt", "index.html", "robots.txt", "sitemap.xml"]) {
+  for (const file of ["agents.md", "CONTRIBUTING.md", "SECURITY.md", "llms.txt", "index.html", "robots.txt", "sitemap.xml"]) {
     assert.ok(fs.existsSync(path.join(root, file)), `missing ${file}`);
     assert.ok(read(file).length > 0, `${file} is empty`);
   }
@@ -23,6 +23,25 @@ test("community documents exist and point contributors at GitHub", () => {
   assert.match(contributing, /npm run verify/);
   assert.match(contributing, /secret/i);
   assert.match(contributing, /loan data/i);
+});
+
+test("SECURITY.md defines private reporting and the key/invite lifecycle", () => {
+  const security = read("SECURITY.md").toLowerCase().replace(/\s+/g, " ");
+  for (const phrase of [
+    "private vulnerability reporting",
+    "security advisories",
+    "do not open a public issue",
+    "invite codes",
+    "shared per role",
+    "disable",
+    "rotate",
+    "orphan",
+  ]) {
+    assert.ok(security.includes(phrase), `SECURITY.md is missing: ${phrase}`);
+  }
+  assert.ok(read("README.md").includes("SECURITY.md"), "README.md does not link SECURITY.md");
+  assert.ok(read("llms.txt").includes("SECURITY.md"), "llms.txt does not link SECURITY.md");
+  assert.ok(read("index.html").includes("SECURITY.md"), "index.html does not link SECURITY.md");
 });
 
 test("llms.txt gives agents the shared-responsibility and upstreaming rules", () => {

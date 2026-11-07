@@ -587,3 +587,34 @@ a new dated entry.
 - This verification entry is itself a docs-only follow-up commit; its own CI,
   Pages, raw `history.md`/`todo.md`, clean-worktree, and cleanup checks are
   reported in the delivery response.
+
+## 2026-11-07 — Portal key minting and invite/key lifecycle
+
+- Completed the portal key-minting P1. `POST /portal` is throttled at the stage to
+  1 request/second with a burst of 2, and the throttle is asserted in the template
+  tests.
+- Added a dedicated `ProvisioningTable` for idempotency metadata. Provisioning is
+  keyed by a SHA-256 hash of normalized role + company + email; a conditional
+  DynamoDB claim blocks concurrent double-mints. Pending claims expire after 15
+  minutes; completed records expire after 24 hours. No plaintext API key is
+  persisted.
+- A repeat submission returns the same key through API Gateway
+  `GetApiKey(includeValue=true)` with `reused: true`. A pending claim returns
+  `409 PROVISIONING_IN_PROGRESS`; a disabled, missing, or unmapped key returns
+  `409` instead of minting a duplicate.
+- Partial failure rollback: if tenant mapping fails after key creation, the
+  handler removes the usage-plan association, deletes the key, and releases the
+  claim. If key deletion fails it logs `API_KEY_ORPHANED` and leaves the claim in
+  place to fail closed. IAM now covers the required DynamoDB delete and API
+  Gateway get/remove/delete operations.
+- Added `SECURITY.md` with private vulnerability reporting through GitHub security
+  advisories, invite rotation, key disable/delete, compromise response, and orphan
+  cleanup. Invites remain shared per role and are not single-use.
+- Updated `README.md`, `agents.md`, `llms.txt`, `index.html`, `todo.md`, and this
+  history with the lifecycle and verification limits.
+- Local verification: `npm run verify` reported the committed template up to date
+  at 78,196 bytes and 74/74 tests passing. Tests cover idempotent repeats,
+  concurrent-claim rejection, rollback cleanup, disabled-key rejection, throttle
+  wiring, and SECURITY.md/static links. No AWS or live Encompass access was used.
+- This entry was written before the push; exact-SHA CI, Pages, raw bytes, and the
+  clean-worktree check are reported in the delivery response.

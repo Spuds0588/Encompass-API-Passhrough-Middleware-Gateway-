@@ -77,6 +77,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 | `index.html` | Static SEO/AEO landing page served from GitHub Pages. |
 | `llms.txt` | Machine-readable project guide for LLMs and coding agents. |
 | `CONTRIBUTING.md` | Community bug-report, testing, and pull-request workflow. |
+| `SECURITY.md` | Private vulnerability reporting, invite/key lifecycle, disable/delete commands, orphan cleanup. |
 | `robots.txt`, `sitemap.xml` | Crawler policy and sitemap for the static page. |
 | `.github/workflows/ci.yml` | Runs tests and template-sync check on push/PR. |
 
@@ -84,7 +85,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 68 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 74 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -96,7 +97,9 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - `src/gateway.js` exports `handler` (lazy AWS store) and
   `createHandler({ store, env, fetchImpl, now })` for tests.
 - Storage interface: `getSecret`, `getTenant`, `putTenant`, `getToken`,
-  `putToken`, `getJob`, `putJob`, `enqueueWrite`, `createApiKey`.
+  `putToken`, `getJob`, `putJob`, `enqueueWrite`, `createApiKey`, `getApiKey`,
+  `deleteApiKey`, `claimProvisioning`, `getProvisioning`, `putProvisioning`,
+  `deleteProvisioning`.
 - Structured logs only: `log(level, ACTION, details)` → single-line JSON with
   `timestamp`, `level`, `action`, and the current `requestId`. Never log tokens,
   secrets, API keys, query strings, request/response bodies, or full upstream
@@ -146,7 +149,18 @@ npm run dev       # local gateway at :3000 with fake Encompass
   and are never logged.
 - API Gateway API keys are required on `/{proxy+}`; the portal and `/health` are
   the only unauthenticated routes.
-- API key plaintext is returned once by the portal and never stored.
+- Portal provisioning is idempotent per normalized role + company + email.
+  A conditional DynamoDB claim (15-minute lock, 24-hour completion TTL) blocks
+  concurrent double-mints. Repeats recover the existing key with API Gateway
+  `GetApiKey(includeValue=true)`; plaintext is never stored. A disabled, missing,
+  or inconsistent key returns `409` rather than minting a duplicate.
+- If tenant mapping fails after key creation, delete the key and release the
+  claim. If deletion fails, log `API_KEY_ORPHANED` with the key ID, keep the claim
+  to fail closed, and follow the cleanup runbook in `SECURITY.md`.
+- Invite codes are shared per role, never single-use. Rotate by redeploying with
+  a new role code; existing API keys are unaffected. Never log invite codes.
+- `POST /portal` is throttled at the stage to 1 rps / burst 2. Security reports
+  go through the private advisory flow in `SECURITY.md`, not public issues.
 - The Encompass client secret lives in Secrets Manager; DynamoDB uses SSE.
 - Tenant resolution is always `requestContext.identity.apiKeyId` (never a
   client-supplied tenant ID). The tenant must have `status: ACTIVE`; missing or
@@ -161,8 +175,9 @@ npm run dev       # local gateway at :3000 with fake Encompass
   for Encompass persona permissions.
 - Upload/download URLs and their `authorizationHeader` values are short-lived
   credentials. Pass them through without logging or caching.
-- Gateway IAM is scoped to the three tables, two queues, one secret, and only
-  `apigateway:POST` for key provisioning.
+- Gateway IAM is scoped to the four tables, two queues, one secret, and only the
+  API Gateway key operations the portal needs: create/attach, get, remove from the
+  usage plan, and delete.
 
 ## Workflow
 

@@ -64,7 +64,8 @@ curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
 - **Role-scoped self-serve onboarding** — the lender shares a title, broker, or
   appraisal invite link. The vendor enters a company name and developer email;
   the gateway locks the key to that role's Encompass persona server-side. No
-  admin token and no Encompass admin in the onboarding loop.
+  admin token and no Encompass admin in the onboarding loop. Repeated
+  submissions return the same key instead of minting duplicates.
 - **Field discovery** — the portal publishes a common-field cheat sheet, and
   `GET /v1/fields?ids=11,646,CX.TITLE.STATUS` returns live definitions from
   Encompass's native standard and custom field schema APIs. `readOnly` and
@@ -256,13 +257,16 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 68 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
+npm test          # 74 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```
 
 Coverage highlights: token exchange and cache reuse/expiry, tenant isolation,
 field projection and validation, writeability metadata, inactive-tenant rejection,
+idempotent portal provisioning, concurrent-claim rejection, rollback of a new key
+when tenant mapping fails, disabled-key rejection, and the stage throttle and IAM
+wiring for portal key minting,
 attachment download URLs plus a real byte download, request-ID correlation across
 HTTP responses, jobs, SQS, and worker logs, read cache hits, 202 enqueue, job
 ownership, worker success, 423 retry-then-success,
@@ -287,6 +291,7 @@ test/                 node:test suites (including static-page/community guards)
 index.html            static SEO/AEO landing page served by GitHub Pages
 llms.txt              compact machine-readable guide for LLMs and coding agents
 CONTRIBUTING.md       community bug-report and pull-request workflow
+SECURITY.md           private vulnerability reporting and credential lifecycle
 robots.txt            crawler policy for the static page
 sitemap.xml           sitemap for the static page
 agents.md             operating manual (YAGNI, cleanup, conventions)
@@ -338,6 +343,55 @@ aws sqs purge-queue --queue-url "$DLQ_URL"
    availability) before re-driving work. Failed jobs are not replayed
    automatically; resubmit the write with a new job.
 
+### API key and invite lifecycle
+
+Invite codes are shared per role, not single-use. A title invite can be used by
+multiple title partners and only mints title-persona keys. There is no
+self-service revocation or invitation-management UI.
+
+Rotate a role by redeploying with a new 24+ character invite code. Existing API
+keys keep working; the old invite URL stops working immediately:
+
+```bash
+TITLE_INVITE_CODE="$(openssl rand -hex 24)" \
+BROKER_INVITE_CODE="$BROKER_INVITE_CODE" \
+APPRAISAL_INVITE_CODE="$APPRAISAL_INVITE_CODE" \
+bash <(curl -sSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)
+```
+
+If a role's code is omitted, `deploy.sh` generates a new one and prints it. Save
+all three outputs, or the omitted role's partners will need the newly printed
+link.
+
+Disable a compromised key immediately, before deleting anything:
+
+```bash
+KEY_ID="<apiKeyId>"
+aws apigateway update-api-key --api-key "$KEY_ID" \
+  --patch-operations op=replace,path=/enabled,value=false
+```
+
+Review access logs by `apiKeyId` and `requestId`, rotate the affected invite, and
+mint a replacement through the portal. A disabled or deleted key is never
+silently replaced: a repeat provisioning request returns `409` with
+`code: API_KEY_UNAVAILABLE`. To delete a key permanently, remove its usage-plan
+association and then delete it:
+
+```bash
+aws apigateway delete-usage-plan-key \
+  --usage-plan-id "$USAGE_PLAN_ID" --key-id "$KEY_ID" --key-type API_KEY
+aws apigateway delete-api-key --api-key "$KEY_ID"
+```
+
+Portal provisioning is idempotent for the same normalized role, company, and
+email. DynamoDB holds a conditional provisioning claim and a 24-hour completion
+record, never the key value. A repeat uses API Gateway
+`GetApiKey(includeValue=true)` to return the same key, and a concurrent request
+returns `409 PROVISIONING_IN_PROGRESS` instead of minting a second key. If tenant
+mapping fails after key creation, the handler deletes the key and releases the
+claim; a cleanup failure logs `API_KEY_ORPHANED` and leaves the claim in place to
+fail closed. See `SECURITY.md` for orphan cleanup and reporting.
+
 ### Per-role field write allowlists
 
 Set `TitleWriteFields`, `BrokerWriteFields`, or `AppraisalWriteFields` to a
@@ -355,7 +409,9 @@ No loan database or mirror is maintained. The actual data paths are:
   4 days. SSE-SQS is enabled.
 - **DynamoDB:** tenant name, email, role, persona, and API key ID; OAuth tokens
   with a TTL at token expiry (DynamoDB TTL deletion is eventual); job metadata for
-  30 days. Job records do not contain field values.
+  30 days; and provisioning idempotency metadata (a hash, status, and API key ID,
+  never plaintext keys) with a 15-minute pending lock and a 24-hour completion
+  TTL. Job records do not contain field values.
 - **Documents and conditions:** document lists, condition reads, and upload-URL
   responses are passed through and never stored or cached. File bytes go from the
   vendor directly to Encompass's pre-signed URL; the gateway never proxies them
@@ -378,14 +434,22 @@ remaining deletion, alarm, and offboarding work.
   so treat browser history and shared links as sensitive. The template's API
   Gateway access-log format deliberately excludes query strings. Rotate by
   updating the stack parameter; there is no self-service rotation UI.
-- API keys are created in API Gateway, attached to the usage plan, returned once,
-  and never stored in plaintext. Only `apiKeyId` is persisted.
+- Portal key minting is idempotent per normalized role, company, and email for
+  24 hours. A conditional DynamoDB claim blocks concurrent double-mints; repeats
+  return the same key through `GetApiKey(includeValue=true)`, and plaintext is
+  never persisted. A disabled or missing key returns `409` instead of minting a
+  duplicate.
+- `POST /portal` is throttled at the stage to 1 request/second with a burst of 2.
+  Invite codes are shared per role rather than single-use.
+- Report vulnerabilities through the private advisory flow in `SECURITY.md`.
+  Never open a public issue with unpatched exploit details.
 - Every vendor route resolves the tenant from `requestContext.identity.apiKeyId`;
   the tenant must be `ACTIVE`, and job reads additionally verify ownership.
 - Field schema calls use the tenant's persona token and return definitions only,
   never loan data. Results are cached per persona and field set for 5 minutes.
-- Gateway IAM is scoped to the three tables, two queues, one secret, and the
-  API Gateway key-provisioning actions.
+- Gateway IAM is scoped to the four tables, two queues, one secret, and the
+  API Gateway key lifecycle actions used by the portal (create, attach, get,
+  remove from the usage plan, and delete).
 - Document, upload, and condition routes resolve the tenant from the API key and
   use that tenant's persona token. Upload responses are `no-store` and their
   short-lived `authorizationHeader` is treated as a credential.

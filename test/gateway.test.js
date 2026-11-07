@@ -421,17 +421,63 @@ test("portal provisions a persona-locked key via an invite", async () => {
   const body = parse(response);
   assert.equal(body.role, "title");
   assert.equal(body.encompassUserId, "api_title_template");
+  assert.equal(body.reused, false);
   assert.ok(body.apiKey);
 
   const apiKeyId = store.keyIdsByValue.get(body.apiKey);
+  assert.equal(body.apiKeyId, apiKeyId);
   assert.ok(apiKeyId);
   const tenant = await store.getTenant(apiKeyId);
   assert.equal(tenant.email, "dev@acme.test");
   assert.equal(tenant.role, "title");
   assert.equal(tenant.encompassUserId, "api_title_template");
+  assert.ok(tenant.provisioningKey);
 
   const read = await handler(httpEvent({ path: "/v1/loans/loan-1", apiKeyId }));
   assert.equal(read.statusCode, 200);
+});
+
+test("portal provisioning is idempotent for the same normalized identity", async () => {
+  const first = parse(await provision());
+  const second = await provision({ tenantName: "  acme title ", email: "DEV@ACME.TEST" });
+  assert.equal(second.statusCode, 200);
+
+  const body = parse(second);
+  assert.equal(body.reused, true);
+  assert.equal(body.apiKey, first.apiKey);
+  assert.equal(body.apiKeyId, first.apiKeyId);
+  assert.equal(store.apiKeys.size, 1);
+});
+
+test("portal returns 409 while provisioning is already in progress", async () => {
+  store.claimProvisioning = async () => false;
+  store.getProvisioning = async () => ({ status: "PENDING" });
+
+  const response = await provision();
+  assert.equal(response.statusCode, 409);
+  assert.equal(parse(response).code, "PROVISIONING_IN_PROGRESS");
+  assert.equal(store.apiKeys.size, 0);
+});
+
+test("portal deletes a new key and releases the claim when tenant mapping fails", async () => {
+  store.putTenant = async () => {
+    throw new Error("ddb unavailable");
+  };
+
+  const response = await provision();
+  assert.equal(response.statusCode, 503);
+  assert.equal(store.apiKeys.size, 0);
+  assert.equal(store.keyIdsByValue.size, 0);
+  assert.equal(store.provisioning.size, 0);
+});
+
+test("portal fails closed when the existing key is disabled", async () => {
+  const first = parse(await provision());
+  store.apiKeys.get(first.apiKeyId).enabled = false;
+
+  const response = await provision();
+  assert.equal(response.statusCode, 409);
+  assert.equal(parse(response).code, "API_KEY_UNAVAILABLE");
 });
 
 test("portal validates company name and email", async () => {

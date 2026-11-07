@@ -72,6 +72,19 @@ test("portal provisioning is role-scoped and has no admin token", () => {
   assert.ok(!template.includes("AdminPortalToken"));
 });
 
+test("portal key minting is throttled and has idempotent cleanup wiring", () => {
+  assert.match(template, /MethodSettings:/);
+  assert.match(template, /ResourcePath: "\/portal"/);
+  assert.match(template, /HttpMethod: POST\n {10}ThrottlingRateLimit: 1\n {10}ThrottlingBurstLimit: 2/);
+  assert.match(template, /ProvisioningTable:/);
+  assert.match(template, /PROVISIONING_TABLE: !Ref ProvisioningTable/);
+  assert.match(template, /dynamodb:DeleteItem/);
+  assert.match(template, /apigateway:GET/);
+  assert.match(template, /apigateway:DELETE/);
+  assert.match(template, /\/apikeys\/\*/);
+  assert.match(template, /\/usageplans\/\$\{UsagePlan\}\/keys\/\*/);
+});
+
 test("field schema proxy uses native Encompass endpoints", () => {
   assert.match(template, /schemas\/loan\/standardFields/);
   assert.match(template, /settings\/loan\/customFields/);
