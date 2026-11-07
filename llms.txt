@@ -1,6 +1,6 @@
 # Encompass API Passthrough Gateway
 
-> An open-source, community-supported AWS middleware template for ICE Encompass: field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, and standard/custom field schema discovery. It keeps no loan database or mirror; write payloads transit SQS and read projections stay in Lambda memory for up to 30 seconds. It is not affiliated with or endorsed by ICE Mortgage Technology. The maintainers cannot run a live Encompass developer instance or a lender AWS account; real-world validation is a shared community responsibility. Report reproducible bugs and upstream fixes through GitHub.
+> An open-source, community-supported AWS middleware template for ICE Encompass: field-filtered reads, asynchronous FIFO writes, full and chunked V3 loan registration, milestone submission, eFolder document creation/upload/download, enhanced and standard conditions, role-scoped vendor onboarding, and standard/custom field schema discovery. It keeps no loan database or mirror; write payloads transit SQS and read projections stay in Lambda memory for up to 30 seconds. It is not affiliated with or endorsed by ICE Mortgage Technology. The maintainers cannot run a live Encompass developer instance or a lender AWS account; real-world validation is a shared community responsibility. Report reproducible bugs and upstream fixes through GitHub.
 
 ## Canonical resources
 
@@ -16,7 +16,7 @@
 
 ## What it does
 
-**Priority:** loan-file documents and conditions (list, upload, download, read/respond) are the primary broker use case and outrank every other backlog item.
+**Priority:** the broker loan-file lifecycle (full/chunked registration, underwriting submission, documents, and prior-to-docs/funding/post-closing conditions) is the primary use case and outranks every other backlog item.
 
 - Deploys one self-contained AWS Lambda behind API Gateway, with DynamoDB, SQS FIFO plus DLQ, Secrets Manager, and a single CloudFormation template.
 - Reads ICE Encompass loan fields on demand and returns only the requested projection, normalizing flat or nested Encompass field payloads to `{ id, fields, _cached }`. Reads are cached for 30 seconds per persona in Lambda memory.
@@ -25,7 +25,8 @@
 - Provides role-scoped invite onboarding for title/settlement, TPO/broker, and AMC/appraisal partners. The server chooses the Encompass persona from the role; clients cannot choose it. Invite codes are shared per role, not single-use, and `POST /portal` is throttled to 1 rps / burst 2.
 - Makes portal key minting idempotent per normalized role + company + email. A conditional DynamoDB claim blocks concurrent double-mints; repeats return the same key via API Gateway `GetApiKey(includeValue=true)`, and plaintext keys are never stored. Partial failures delete the key and release the claim; unrecoverable cleanup is logged as `API_KEY_ORPHANED` for the `SECURITY.md` runbook.
 - Proxies the native standard and custom field schema APIs through `GET /v1/fields?ids=...`, including `readOnly` and `fieldLock` when Encompass supplies them.
-- Lists eFolder documents, initiates native pre-signed attachment uploads, gets pre-signed download URLs, and reads or responds to enhanced conditions. Condition `PATCH` rejects retrieve-only `status`, `statusDate`, and `statusOpen`; respond through `tracking`/`internalDescription`. File bytes go directly between the vendor and Encompass storage; the gateway never proxies them.
+- Registers full V3 `LoanContract` applications with `POST /v1/loans?loanFolder=...`, applies chunked updates with `PATCH /v1/loans/{loanId}/application`, and drives Submittal/Resubmittal through native V1 milestone routes.
+- Lists and creates eFolder documents, initiates native pre-signed attachment uploads, gets pre-signed download URLs, and reads/creates/updates both enhanced V3 conditions and standard V1 underwriting/preliminary/post-closing conditions. Documents can be associated with either condition mode and fulfilled with native tracking or `isFulfilled` updates. Condition `PATCH` rejects retrieve-only `status`, `statusDate`, and `statusOpen`; respond through `tracking`/`internalDescription`. File bytes go directly between the vendor and Encompass storage; the gateway never proxies them.
 - Keeps no loan database or mirror. It stores tenant mappings, short-lived persona tokens, and job metadata; write payloads transit an encrypted SQS FIFO queue for up to 1 day (DLQ 4 days), and read projections stay in memory for up to 30 seconds.
 
 ## API surface
@@ -36,24 +37,31 @@
 - `GET /v1/fields?ids=11,646,CX.TITLE.STATUS` — definitions plus `readOnly`/`fieldLock` when provided
 - `GET /v1/loans/{loanId}?fields=11,12,1109`
 - `PATCH /v1/loans/{loanId}` with a `fields` object
+- `POST /v1/loans?loanFolder=...` with a full V3 `LoanContract` — register a loan; 1 MB cap
+- `PATCH /v1/loans/{loanId}/application` with a V3 `LoanContract` — chunked application update
+- `GET /v1/loans/{loanId}/milestones` and `PATCH /v1/loans/{loanId}/milestones/{milestoneId}?action=finish|unfinish` — submission/re-submission
 - `GET /v1/loans/{loanId}/documents` — eFolder document list
+- `POST /v1/loans/{loanId}/documents` — create eFolder documents
 - `POST /v1/loans/{loanId}/attachmentUploadUrl` with `file`, optional `title` and `assignTo` — pre-signed upload URL
 - `POST /v1/loans/{loanId}/attachmentDownloadUrl` with `attachments` (1–20 ids) — pre-signed download URLs
-- `GET /v1/loans/{loanId}/conditions` — enhanced conditions
+- `GET` and `POST /v1/loans/{loanId}/conditions` — read or create enhanced conditions
 - `PATCH /v1/loans/{loanId}/conditions` with an array of `{ id, ... }` updates — respond to a condition; `status`, `statusDate`, and `statusOpen` are retrieve-only and rejected
+- `GET` and `PATCH /v1/loans/{loanId}/conditions/{conditionId}/documents` — list or add/remove enhanced-condition evidence (`?action=add|remove`)
+- `GET`, `POST`, and `PATCH /v1/loans/{loanId}/standard-conditions/{type}` — read/create/manage standard V1 conditions; `type` is `underwriting`, `preliminary`, or `postclosing`
+- `PATCH /v1/loans/{loanId}/standard-conditions/{type}/{conditionId}/documents?action=add|remove` — associate documents with a standard condition
 - `GET /v1/jobs/{jobId}`
 
 All `/v1/*` routes require `x-api-key`. The portal and health check are the only unauthenticated HTTP routes. Every HTTP response includes `x-request-id`; write jobs preserve it and return it from `GET /v1/jobs/{jobId}`.
 
 ## Deploy and verify locally
 
-- One-line installer: `bash <(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)` — pins the template `v0.1.0` release tag, verifies SHA-256, and passes secrets through a protected parameter file.
+- One-line installer: `bash <(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/main/deploy.sh)` — pins the template `v0.2.0` release tag, verifies SHA-256, and passes secrets through a protected parameter file.
 - Local gateway: `npm run dev`
 - Tests and template sync: `npm run verify`
 - CI pins `cfn-lint` and Checkov and runs both against `template.yaml`; `.checkov.yaml` documents the intentional architecture exceptions.
 - Regenerate the committed CloudFormation artifact after handler/template changes: `npm run build`
 - No npm runtime dependencies are used. CI covers Node 20 and Node 24; the Lambda runtime is Node.js 24.
-- The local fake Encompass covers OAuth, loans, 423 lock retries, and standard/custom schema responses. Local tests are not a substitute for testing a real Encompass tenant or AWS stack.
+- The local fake Encompass covers OAuth, loans, 423 lock retries, standard/custom schema responses, full/chunked loan writes, milestones, document creation, attachment bytes, and enhanced/standard condition writes. Local tests are not a substitute for testing a real Encompass tenant or AWS stack.
 
 ## Community contract
 
@@ -79,10 +87,10 @@ All `/v1/*` routes require `x-api-key`. The portal and health check are the only
 
 ## Verification status and limitations
 
-- Verified locally and in CI: handler routing, invite validation and persona locking, idempotent portal provisioning with rollback, portal method throttling in the template, deploy-script TLS/checksum/secret-file guards, `cfn-lint` and Checkov template scans, field schema lookup and caching, reads and projections (including nested payloads), retrieve-only condition rejection, async writes, retry behavior, request-ID correlation across responses/jobs/SQS/worker logs, eFolder document reads, pre-signed attachment upload initiation, pre-signed download URLs plus real byte downloads, enhanced-condition read/respond, template sync, and template limits.
+- Verified locally and in CI: handler routing, invite validation and persona locking, idempotent portal provisioning with rollback, portal method throttling in the template, deploy-script TLS/checksum/secret-file guards, `cfn-lint` and Checkov template scans, field schema lookup and caching, reads and projections (including nested payloads), retrieve-only condition rejection, async writes, retry behavior, request-ID correlation across responses/jobs/SQS/worker logs, eFolder document reads/creation, pre-signed attachment upload initiation, pre-signed download URLs plus real byte downloads, full/chunked loan writes, milestone read/finish/unfinish, enhanced and standard condition create/read/update, condition-document association, template sync, and template limits.
 - Not verified by the maintainers: a real CloudFormation deployment, API Gateway key creation/GetApiKey recovery, stage method-throttle enforcement, DynamoDB/SQS behavior, live Encompass OAuth, loan reads/writes, and the exact standard/custom schema response shape for every Encompass tenant.
 - Known limitations: one shared usage plan, global per-role invite codes rather than single-use vendor invites, no revocation UI, no CORS, and a curated 11-field cheat sheet whose custom fields only appear through a live schema lookup.
-- Broker scope covers field-level reads/writes, eFolder document listing, pre-signed attachment upload initiation and download URLs, and enhanced-condition read/respond. There is no structured 1003/application resource, no standard (V1) condition API, no document create/update/remove, and no multi-chunk upload orchestration. `PATCH` accepts at most 100 fields per job and is not transactional across jobs.
-- The committed template is 78,986 bytes, so `deploy.sh` uploads it to S3 automatically; direct CloudFormation upload is capped at 51,200 bytes and the S3-hosted limit is 1,000,000 bytes.
+- Broker scope covers field-level reads/writes, full and chunked V3 loan registration, milestones, eFolder document listing/creation, pre-signed attachment upload/download, enhanced conditions, and standard underwriting/preliminary/post-closing conditions with document association. There is no cross-request transaction, document update/remove, condition comments, or multi-chunk upload orchestration. The legacy flat-field `PATCH` accepts at most 100 fields per job and is not transactional across jobs.
+- The committed template is 101,034 bytes, so `deploy.sh` uploads it to S3 automatically; direct CloudFormation upload is capped at 51,200 bytes and the S3-hosted limit is 1,000,000 bytes.
 - API Gateway access logging uses an account-wide CloudWatch role (`ApiGatewayAccount`); confirm it is compatible with other stacks in a shared account.
 - The static landing page is served from GitHub Pages. The runtime API is deployed separately into each lender's AWS account.

@@ -235,3 +235,177 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     await gateway.close();
   }
 });
+
+test("broker loan lifecycle over real HTTP", async () => {
+  const fake = await startFakeEncompass();
+  const gateway = await createDevGateway({ fakeEncompass: fake });
+
+  try {
+    const provisioned = await request(`${gateway.url}/portal`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tenantName: "Acme Broker",
+        email: "broker@acme.test",
+        role: "broker",
+        code: gateway.invites.broker.code,
+      }),
+    });
+    assert.equal(provisioned.status, 200);
+    const apiKey = provisioned.body.apiKey;
+    const headers = { "content-type": "application/json", "x-api-key": apiKey };
+
+    const created = await request(`${gateway.url}/v1/loans?loanFolder=Broker%20Pipeline`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        loanAmount: 525000,
+        applications: [{ borrower: { firstName: "Ada", lastName: "Lovelace" } }],
+      }),
+    });
+    assert.equal(created.status, 201);
+    const loanId = created.body.loanId;
+    assert.match(loanId, /^loan-created-/);
+
+    const application = await request(`${gateway.url}/v1/loans/${loanId}/application`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ applications: [{ borrower: { firstName: "Grace" } }] }),
+    });
+    assert.equal(application.status, 200);
+    assert.equal(application.body.updated, true);
+
+    const milestones = await request(`${gateway.url}/v1/loans/${loanId}/milestones`, {
+      headers: { "x-api-key": apiKey },
+    });
+    assert.equal(milestones.status, 200);
+    assert.equal(milestones.body.milestones.some((item) => item.milestoneName === "Submittal"), true);
+
+    for (const milestoneId of ["milestone-submittal", "milestone-resubmittal"]) {
+      const finished = await request(
+        `${gateway.url}/v1/loans/${loanId}/milestones/${milestoneId}?action=finish`,
+        { method: "PATCH", headers: { "x-api-key": apiKey } },
+      );
+      assert.equal(finished.status, 200);
+      assert.equal(finished.body.action, "finish");
+    }
+
+    const document = await request(`${gateway.url}/v1/loans/${loanId}/documents`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify([{ title: "Initial underwriting package" }]),
+    });
+    assert.equal(document.status, 200);
+    const documentId = document.body.documents[0].id;
+
+    const upload = await request(`${gateway.url}/v1/loans/${loanId}/attachmentUploadUrl`, {
+      method: "POST",
+      headers: { "x-api-key": apiKey },
+      body: JSON.stringify({
+        file: { contentType: "application/pdf", name: "underwriting.pdf", size: 11 },
+        assignTo: { entityId: documentId, entityType: "Document" },
+      }),
+    });
+    assert.equal(upload.status, 200);
+    const put = await request(upload.body.url, {
+      method: "PUT",
+      headers: { authorization: upload.body.authorizationHeader },
+      body: Buffer.from("underwriting"),
+    });
+    assert.equal(put.status, 200);
+
+    const condition = await request(`${gateway.url}/v1/loans/${loanId}/conditions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify([
+        {
+          conditionType: "Underwriting",
+          title: "Provide prior-to-docs package",
+          priorTo: "Docs",
+        },
+      ]),
+    });
+    assert.equal(condition.status, 200);
+    const conditionId = condition.body.conditions[0].id;
+
+    const linked = await request(
+      `${gateway.url}/v1/loans/${loanId}/conditions/${conditionId}/documents?action=add`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify([{ entityId: documentId, entityType: "Document" }]),
+      },
+    );
+    assert.equal(linked.status, 200);
+
+    const linkedDocuments = await request(
+      `${gateway.url}/v1/loans/${loanId}/conditions/${conditionId}/documents`,
+      { headers: { "x-api-key": apiKey } },
+    );
+    assert.equal(linkedDocuments.status, 200);
+    assert.deepEqual(linkedDocuments.body.documents.map((item) => item.id), [documentId]);
+
+    const satisfied = await request(`${gateway.url}/v1/loans/${loanId}/conditions`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify([{ id: conditionId, tracking: [{ status: "Cleared", isChecked: true }] }]),
+    });
+    assert.equal(satisfied.status, 200);
+
+    const initialConditions = await request(`${gateway.url}/v1/loans/loan-1/standard-conditions/underwriting`, {
+      headers: { "x-api-key": apiKey },
+    });
+    assert.equal(initialConditions.status, 200);
+    assert.equal(initialConditions.body.conditions.length, 1);
+
+    const fundingCondition = await request(
+      `${gateway.url}/v1/loans/loan-1/standard-conditions/underwriting`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ title: "Provide prior-to-funding title update", priorTo: "Funding" }),
+      },
+    );
+    assert.equal(fundingCondition.status, 200);
+    const fundingConditionId = fundingCondition.body.data.id;
+
+    const fundingSatisfied = await request(
+      `${gateway.url}/v1/loans/loan-1/standard-conditions/underwriting?action=update`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ id: fundingConditionId, isFulfilled: true, status: "Fulfilled" }),
+      },
+    );
+    assert.equal(fundingSatisfied.status, 200);
+
+    const fundingDocuments = await request(
+      `${gateway.url}/v1/loans/loan-1/standard-conditions/underwriting/${fundingConditionId}/documents?action=add`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify([{ entityId: "doc-2", entityType: "Document" }]),
+      },
+    );
+    assert.equal(fundingDocuments.status, 200);
+
+    const postClosing = await request(
+      `${gateway.url}/v1/loans/loan-1/standard-conditions/postclosing`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ title: "Provide final title policy" }),
+      },
+    );
+    assert.equal(postClosing.status, 200);
+
+    assert.equal(fake.state.loanCreates, 1);
+    assert.equal(fake.state.applicationUpdates, 1);
+    assert.equal(fake.state.milestoneUpdates, 2);
+    assert.equal(fake.state.conditionDocumentUpdates, 1);
+    assert.equal(fake.state.standardConditionCreates, 2);
+    assert.equal(fake.state.standardConditionDocumentUpdates, 1);
+  } finally {
+    await gateway.close();
+  }
+});

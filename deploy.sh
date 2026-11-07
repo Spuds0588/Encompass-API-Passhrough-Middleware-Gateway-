@@ -12,7 +12,7 @@
 #   APPRAISAL_INVITE_CODE, TITLE_PERSONA, BROKER_PERSONA, APPRAISAL_PERSONA,
 #   TEMPLATE_REF, TEMPLATE_SHA256, TEMPLATE_URL, ARTIFACT_BUCKET
 #
-# The template is fetched from the pinned v0.1.0 release tag and verified against
+# The template is fetched from the pinned v0.2.0 release tag and verified against
 # its SHA-256 before deployment. The tag is only a locator; the digest is the
 # integrity anchor, so a moved or mistyped tag fails closed. The client secret and invite codes are written to a 0600
 # temporary parameter file and passed as file://, never as process arguments.
@@ -30,8 +30,8 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 STACK_NAME="${STACK_NAME:-Encompass-API-Gateway}"
-TEMPLATE_REF="${TEMPLATE_REF:-v0.1.0}"
-TEMPLATE_SHA256="${TEMPLATE_SHA256:-4e62005bcf5b85468c8d1ce75c6416493b80b50b8f4caa953a72c7fba766384e}"
+TEMPLATE_REF="${TEMPLATE_REF:-v0.2.0}"
+TEMPLATE_SHA256="${TEMPLATE_SHA256:-9f0323b8f2f7d6a6bf94481ae97e538f6e094789f4f9d3ac2a0122ada4dabab5}"
 TEMPLATE_URL="${TEMPLATE_URL:-https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/${TEMPLATE_REF}/template.yaml}"
 
 say() { printf '%b\n' "$1"; }

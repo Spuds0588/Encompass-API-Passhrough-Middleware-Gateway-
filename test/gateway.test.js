@@ -764,6 +764,277 @@ test("condition update rejects retrieve-only status fields", async () => {
   assert.equal(fake.state.conditionUpdates, 0);
 });
 
+test("POST /v1/loans creates a full application and returns the loan id", async () => {
+  const response = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans",
+      query: { loanFolder: "Broker Pipeline" },
+      body: {
+        loanAmount: 525000,
+        applications: [{ borrower: { firstName: "Ada", lastName: "Lovelace" } }],
+      },
+    }),
+  );
+  assert.equal(response.statusCode, 201);
+
+  const body = parse(response);
+  assert.match(body.loanId, /^loan-created-/);
+  assert.equal(body.data[0].id, body.loanId);
+  assert.equal(fake.state.loanCreates, 1);
+  assert.equal(
+    fake.state.loans.get(body.loanId).applications[0].borrower.firstName,
+    "Ada",
+  );
+});
+
+test("POST /v1/loans requires a folder and a contract object", async () => {
+  const missingFolder = await handler(
+    httpEvent({ method: "POST", path: "/v1/loans", body: { applications: [] } }),
+  );
+  assert.equal(missingFolder.statusCode, 400);
+
+  const invalidBody = await handler(
+    httpEvent({ method: "POST", path: "/v1/loans", query: { loanFolder: "Broker Pipeline" }, body: [] }),
+  );
+  assert.equal(invalidBody.statusCode, 400);
+  assert.equal(fake.state.loanCreates, 0);
+});
+
+test("PATCH /v1/loans/{id}/application updates a chunked application", async () => {
+  const response = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/application",
+      body: {
+        applications: [{ borrower: { firstName: "Grace", lastName: "Hopper" } }],
+      },
+    }),
+  );
+  assert.equal(response.statusCode, 200);
+  assert.equal(parse(response).updated, true);
+  assert.equal(fake.state.applicationUpdates, 1);
+  assert.equal(fake.state.loans.get("loan-1").applications[0].borrower.firstName, "Grace");
+
+  const empty = await handler(
+    httpEvent({ method: "PATCH", path: "/v1/loans/loan-1/application", body: {} }),
+  );
+  assert.equal(empty.statusCode, 400);
+});
+
+test("milestones can be read and finished for underwriting submission", async () => {
+  const listed = await handler(httpEvent({ path: "/v1/loans/loan-1/milestones" }));
+  assert.equal(listed.statusCode, 200);
+  assert.equal(parse(listed).milestones.length, 4);
+  assert.equal(parse(listed).milestones[0].milestoneName, "Submittal");
+  assert.equal(fake.state.milestoneReads, 1);
+
+  const finished = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/milestones/milestone-submittal",
+      query: { action: "finish" },
+    }),
+  );
+  assert.equal(finished.statusCode, 200);
+  assert.equal(parse(finished).action, "finish");
+  assert.equal(fake.state.milestoneUpdates, 1);
+  assert.equal(fake.state.milestones.get("loan-1")[0].doneIndicator, true);
+
+  const unfinish = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/milestones/milestone-submittal",
+      query: { action: "unfinish" },
+    }),
+  );
+  assert.equal(unfinish.statusCode, 200);
+  assert.equal(fake.state.milestones.get("loan-1")[0].doneIndicator, false);
+});
+
+test("milestone updates validate the action and target", async () => {
+  const invalidAction = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/milestones/milestone-submittal",
+      query: { action: "submit" },
+    }),
+  );
+  assert.equal(invalidAction.statusCode, 400);
+
+  const missing = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/milestones/milestone-missing",
+      query: { action: "finish" },
+    }),
+  );
+  assert.equal(missing.statusCode, 404);
+});
+
+test("documents and enhanced conditions can be created and linked", async () => {
+  const documentResponse = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/documents",
+      body: [{ title: "Initial underwriting package" }],
+    }),
+  );
+  assert.equal(documentResponse.statusCode, 200);
+  const documentId = parse(documentResponse).documents[0].id;
+  assert.match(documentId, /^doc-created-/);
+  assert.equal(fake.state.documentCreates, 1);
+
+  const conditionResponse = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/conditions",
+      body: [
+        {
+          conditionType: "Underwriting",
+          title: "Provide prior-to-docs package",
+          priorTo: "Docs",
+        },
+      ],
+    }),
+  );
+  assert.equal(conditionResponse.statusCode, 200);
+  const conditionId = parse(conditionResponse).conditions[0].id;
+  assert.match(conditionId, /^condition-created-/);
+  assert.equal(
+    fake.state.conditions.get("loan-1").find((condition) => condition.id === conditionId).priorTo,
+    "Docs",
+  );
+
+  const linked = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: `/v1/loans/loan-1/conditions/${conditionId}/documents`,
+      query: { action: "add" },
+      body: [{ entityId: documentId, entityType: "Document" }],
+    }),
+  );
+  assert.equal(linked.statusCode, 200);
+  assert.equal(parse(linked).updated, 1);
+
+  const documents = await handler(
+    httpEvent({ path: `/v1/loans/loan-1/conditions/${conditionId}/documents` }),
+  );
+  assert.equal(documents.statusCode, 200);
+  assert.deepEqual(parse(documents).documents.map((document) => document.id), [documentId]);
+
+  const satisfied = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/conditions",
+      body: [{ id: conditionId, tracking: [{ status: "Cleared", isChecked: true }] }],
+    }),
+  );
+  assert.equal(satisfied.statusCode, 200);
+  const condition = fake.state.conditions.get("loan-1").find((item) => item.id === conditionId);
+  assert.equal(condition.status, "Cleared");
+});
+
+test("document and enhanced-condition creates validate their arrays", async () => {
+  const cases = [
+    { path: "/v1/loans/loan-1/documents", body: [] },
+    { path: "/v1/loans/loan-1/documents", body: [{}] },
+    { path: "/v1/loans/loan-1/conditions", body: [] },
+    { path: "/v1/loans/loan-1/conditions", body: [{ title: "missing type" }] },
+  ];
+  for (const item of cases) {
+    const response = await handler(httpEvent({ method: "POST", path: item.path, body: item.body }));
+    assert.equal(response.statusCode, 400, item.path);
+  }
+
+  const invalidLink = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/conditions/condition-1/documents",
+      query: { action: "add" },
+      body: [],
+    }),
+  );
+  assert.equal(invalidLink.statusCode, 400);
+});
+
+test("standard conditions support underwriting, prior-to-funding, and post-closing", async () => {
+  const initial = await handler(
+    httpEvent({ path: "/v1/loans/loan-1/standard-conditions/underwriting" }),
+  );
+  assert.equal(initial.statusCode, 200);
+  assert.equal(parse(initial).conditions.length, 1);
+  assert.equal(parse(initial).conditions[0].priorTo, "Docs");
+  assert.equal(fake.state.standardConditionReads, 1);
+
+  const created = await handler(
+    httpEvent({
+      method: "POST",
+      path: "/v1/loans/loan-1/standard-conditions/underwriting",
+      body: { title: "Provide prior-to-funding title update", priorTo: "Funding" },
+    }),
+  );
+  assert.equal(created.statusCode, 200);
+  const conditionId = parse(created).data.id;
+  assert.match(conditionId, /^std-created-/);
+  assert.equal(fake.state.standardConditionCreates, 1);
+
+  const satisfied = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/standard-conditions/underwriting",
+      query: { action: "update" },
+      body: { id: conditionId, isFulfilled: true, status: "Fulfilled" },
+    }),
+  );
+  assert.equal(satisfied.statusCode, 200);
+  assert.equal(fake.state.standardConditionUpdates, 1);
+
+  const linked = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: `/v1/loans/loan-1/standard-conditions/underwriting/${conditionId}/documents`,
+      query: { action: "add" },
+      body: [{ entityId: "doc-2", entityType: "Document" }],
+    }),
+  );
+  assert.equal(linked.statusCode, 200);
+  assert.equal(fake.state.standardConditionDocumentUpdates, 1);
+
+  const readBack = await handler(
+    httpEvent({ path: "/v1/loans/loan-1/standard-conditions/underwriting" }),
+  );
+  const condition = parse(readBack).conditions.find((item) => item.id === conditionId);
+  assert.equal(condition.isFulfilled, true);
+  assert.deepEqual(condition.documents, [{ entityId: "doc-2", entityType: "Document" }]);
+
+  const postClosing = await handler(
+    httpEvent({ method: "POST", path: "/v1/loans/loan-1/standard-conditions/postclosing", body: { title: "Final title policy" } }),
+  );
+  assert.equal(postClosing.statusCode, 200);
+  const postClosingRead = await handler(
+    httpEvent({ path: "/v1/loans/loan-1/standard-conditions/postclosing" }),
+  );
+  assert.equal(parse(postClosingRead).conditionType, "postclosing");
+  assert.equal(parse(postClosingRead).conditions.some((item) => item.title === "Final title policy"), true);
+});
+
+test("standard-condition routes reject unknown sets and actions", async () => {
+  const unknownType = await handler(
+    httpEvent({ path: "/v1/loans/loan-1/standard-conditions/closing" }),
+  );
+  assert.equal(unknownType.statusCode, 400);
+
+  const missingAction = await handler(
+    httpEvent({
+      method: "PATCH",
+      path: "/v1/loans/loan-1/standard-conditions/underwriting",
+      body: { id: "std-underwriting-1" },
+    }),
+  );
+  assert.equal(missingAction.statusCode, 400);
+});
+
 test("per-role write allowlist rejects fields outside the role", async () => {
   const restricted = createHandler({
     store,

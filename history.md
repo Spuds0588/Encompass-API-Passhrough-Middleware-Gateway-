@@ -755,3 +755,34 @@ BLOCKED by missing credentials and are not claimed.
   raw artifacts matched; `v0.1.0` was moved to it.
 - This closeout entry is a docs-only follow-up. Its own CI/Pages and live/raw
   checks are reported in the delivery response. No code or template changed.
+
+## 2026-11-07 — Broker loan lifecycle extension
+
+- Added synchronous native lifecycle routes while leaving the existing async
+  flat-field `PATCH /v1/loans/{id}` unchanged:
+  - `POST /v1/loans` for a full V3 `LoanContract`; requires `loanFolder`, defaults
+    `view=id`, allows up to 1 MB, and extracts the loan ID from the native body or
+    `Location` header.
+  - `PATCH /v1/loans/{id}/application` for chunked V3 contract updates.
+  - `GET /v1/loans/{id}/milestones` and
+    `PATCH /v1/loans/{id}/milestones/{milestoneId}?action=finish|unfinish` for
+    Submittal and Resubmittal.
+  - `POST /v1/loans/{id}/documents` for document creation; bytes still use the
+    existing pre-signed upload flow.
+  - Enhanced-condition create and document list/associate routes.
+  - Standard V1 condition read/create/manage and document association routes for
+    `underwriting`, `preliminary`, and `postclosing` sets.
+- Extended the fake with loan-create/update, milestone, document-create,
+  enhanced-condition-create/document, and standard-condition state. Added
+  handler tests and a real-HTTP broker lifecycle test covering full registration,
+  chunked update, Submittal/Resubmittal, document create/upload, enhanced
+  condition evidence and satisfaction, prior-to-funding standard conditions, and
+  post-closing conditions.
+- Local evidence: focused handler + e2e tests pass; full gate is reported in the
+  delivery response. Template regenerated at 101,034 bytes (SHA-256
+  `9f0323b8f2f7d6a6bf94481ae97e538f6e094789f4f9d3ac2a0122ada4dabab5`).
+- Updated `README.md`, `llms.txt`, `index.html`, `agents.md`, `todo.md`, the
+  template route guards, `package.json` (0.2.0), and the `deploy.sh` tag/digest.
+- Live AWS deployment and live Encompass lifecycle contracts remain BLOCKED and
+  are not claimed. Commit, push, CI, Pages, tag, and raw/live verification are
+  pending for this entry.

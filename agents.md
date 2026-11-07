@@ -70,7 +70,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 | `template.yaml` | Generated, committed deployable template. Never edit by hand. |
 | `scripts/build.js` | Inlines the handler into the template, enforces the 1,000,000-byte S3-hosted limit, supports `--check`. |
 | `deploy.sh` | One-line AWS CloudShell deployment; fetches a pinned template release tag, verifies SHA-256, uses TLS-only curl, passes secrets in a protected parameter file, uses `--s3-bucket` above 51,200 bytes, and deploys the stack. |
-| `dev/fake-encompass.js` | Local fake OAuth + loans + schema + eFolder documents + pre-signed uploads/downloads + enhanced conditions, including 423 lock simulation. |
+| `dev/fake-encompass.js` | Local fake OAuth + loans + schema + eFolder documents + pre-signed uploads/downloads + milestones + enhanced/standard conditions, including 423 lock simulation. |
 | `dev/memory-store.js` | In-memory storage/queue adapter for local runs. Never deployed. |
 | `dev/server.js` | Local API Gateway + SQS emulator around the real handler. |
 | `test/*.test.js` | Unit, end-to-end HTTP, template, and static-page tests (Node built-in runner). |
@@ -85,7 +85,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 79 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 89 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -134,12 +134,18 @@ npm run dev       # local gateway at :3000 with fake Encompass
   `{ attachments: [id] }` body (1–20 ids) and return Encompass's download array
   unchanged inside `{ loanId, downloads }`. Each entry's `url` and
   `authorizationHeader` are short-lived credentials; never log or cache them.
-- Conditions use native V3 `/conditions`; PATCH sends `?action=update` with an
-  array of `{ id, ... }`. Only enhanced conditions are proxied; `status`,
-  `statusDate`, and `statusOpen` are retrieve-only, and PATCH rejects any update
-  containing them with `400`.
-- Document, upload, download, and condition responses are `no-store` and are
-  never cached.
+- Lifecycle writes are synchronous native passthroughs: `POST /v1/loans` (V3
+  create, 1 MB cap), `PATCH /v1/loans/{id}/application` (V3 update), and V1
+  milestone finish/unfinish. Do not route them through SQS; they must return the
+  native result. Tenant/persona resolution and upstream error mapping still apply.
+- Documents use native V3 create and enhanced-condition document association.
+  Standard conditions use V1 underwriting/preliminary/postclosing create, manage,
+  and document routes. Keep `{type}` limited to those three values.
+- Enhanced conditions use native V3 `/conditions`; PATCH sends `?action=update`
+  with an array of `{ id, ... }`. `status`, `statusDate`, and `statusOpen` are
+  retrieve-only, and PATCH rejects any update containing them with `400`.
+- Lifecycle, document, upload, download, and condition responses are `no-store`
+  and are never cached.
 - Tests must not require AWS or Encompass. Use the dev fakes and close every
   server in `afterEach`/`finally` so the test process exits.
 
@@ -181,7 +187,7 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - Gateway IAM is scoped to the four tables, two queues, one secret, and only the
   API Gateway key operations the portal needs: create/attach, get, remove from the
   usage plan, and delete.
-- `deploy.sh` pins `template.yaml` to the `v0.1.0` release tag and verifies
+- `deploy.sh` pins `template.yaml` to the `v0.2.0` release tag and verifies
   SHA-256 before deploying; the digest is the integrity anchor, so a moved tag
   fails closed. curl is constrained to HTTPS/TLS 1.2+. The client secret and invite
   codes are written to a `0600` temp parameter file passed as `file://`, never as
@@ -219,7 +225,7 @@ npm run dev       # local gateway at :3000 with fake Encompass
   (`.github/workflows/ci.yml`) and by fetching the pinned release tag's raw
   `template.yaml` from GitHub, which is exactly what `deploy.sh` downloads.
 - `scripts/build.js` compacts the inlined deploy copy and enforces 1,000,000
-  bytes. The template is 78,986 bytes, above CloudFormation's 51,200-byte direct
+  bytes. The template is 101,034 bytes, above CloudFormation's 51,200-byte direct
   limit, so `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket`
   (S3-hosted limit: 1 MB). Keep the source formatted; do not hand-edit
   `template.yaml`.
@@ -258,6 +264,6 @@ Not defects / deliberate MVP decisions:
   remains 50 rps / 100 burst.
 - Live AWS and Encompass behavior remains unverified; see `todo.md` BLOCKED items.
 
-Local evidence: `npm run verify` passes 79/79 with the template in sync at
-78,986 bytes; `bash -n deploy.sh`, `git diff --check`, `cfn-lint`, and Checkov
+Local evidence: `npm run verify` passes 89/89 with the template in sync at
+101,034 bytes; `bash -n deploy.sh`, `git diff --check`, `cfn-lint`, and Checkov
 pass; no server, scanner, or dependency residue remains.

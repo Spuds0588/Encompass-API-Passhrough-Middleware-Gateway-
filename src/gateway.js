@@ -28,6 +28,8 @@ const CONDITION_ID = /^[A-Za-z0-9._:-]+$/;
 const MAX_CONDITION_UPDATES = 20;
 const MAX_DOWNLOAD_IDS = 20;
 const MAX_BODY_BYTES = 10_000;
+const MAX_APPLICATION_BYTES = 1_000_000;
+const STANDARD_CONDITION_TYPES = new Set(["underwriting", "preliminary", "postclosing"]);
 const DOCUMENT_QUERY_KEYS = ["requireActiveAttachments", "includeRemoved", "view", "start", "limit"];
 const CONDITION_QUERY_KEYS = ["conditionType", "includeRemoved", "view", "start", "limit"];
 const READ_ONLY_CONDITION_FIELDS = ["status", "statusDate", "statusOpen"];
@@ -190,6 +192,67 @@ function pickQuery(params, allowed) {
   return picked;
 }
 
+// Native lifecycle query values such as loanFolder may contain spaces. Reject
+// control characters and cap length rather than forcing callers to pre-encode.
+function pickLooseQuery(params, allowed) {
+  const picked = {};
+  for (const key of allowed) {
+    const value = params && params[key];
+    if (value === undefined || value === null || value === "") continue;
+    const text = String(value);
+    if (text.length > 100 || /[\u0000-\u001f\u007f]/.test(text)) return null;
+    picked[key] = text;
+  }
+  return picked;
+}
+
+const isRecord = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+function parseJsonBody(event, limit = MAX_BODY_BYTES) {
+  const body = String(event.body || "");
+  if (Buffer.byteLength(body) > limit) return { response: error(413, "Request body too large") };
+  try {
+    return { value: JSON.parse(body || "null") };
+  } catch {
+    return { response: error(400, "Invalid JSON body") };
+  }
+}
+
+function validEntityId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 && CONDITION_ID.test(value);
+}
+
+function validEntityReferences(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CONDITION_UPDATES) return null;
+  for (const reference of value) {
+    if (!isRecord(reference) || !validEntityId(reference.entityId)) return null;
+    if (reference.entityType !== undefined && (typeof reference.entityType !== "string" || reference.entityType.length > 50)) {
+      return null;
+    }
+  }
+  return value;
+}
+
+function standardConditionType(value) {
+  const type = String(value || "").toLowerCase();
+  return STANDARD_CONDITION_TYPES.has(type) ? type : null;
+}
+
+function extractLoanId(body, response) {
+  const first = Array.isArray(body) ? body[0] : body;
+  const candidates = [];
+  if (typeof first === "string") candidates.push(first);
+  if (isRecord(first)) candidates.push(first.id, first.loanId);
+  const location = response && response.headers && response.headers.get("location");
+  if (location) {
+    const match = String(location).match(/\/loans\/([^/?#]+)/);
+    if (match) candidates.push(decode(match[1]));
+  }
+  return (
+    candidates.find((value) => typeof value === "string" && value.trim().length > 0 && value.length <= 200) || null
+  );
+}
+
 // Only the fields the officially verified CreateAttachment contract accepts.
 function validUpload(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
@@ -341,21 +404,26 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     return error(400, "Encompass rejected the request", { upstreamStatus: status });
   }
 
-  async function callForLoan(event, apiKeyId, loanId, action, options) {
+  async function callForPath(apiKeyId, action, path, options) {
     const scoped = await authorizedTenant(apiKeyId, action);
     if (scoped.response) return { response: scoped.response };
-    const { path: loanPath, ...request } = options;
     try {
-      const result = await callEncompass(
-        scoped.token,
-        `/encompass/v3/loans/${encodeURIComponent(loanId)}${loanPath}`,
-        request,
-      );
+      const result = await callEncompass(scoped.token, path, options);
       return { tenant: scoped.tenant, result };
     } catch (err) {
-      log("ERROR", "ENCOMPASS_REQUEST_FAILED", { action, loanId, message: err.message });
+      log("ERROR", "ENCOMPASS_REQUEST_FAILED", { action, message: err.message });
       return { response: error(err.name === "TimeoutError" ? 504 : 502, "Encompass request failed") };
     }
+  }
+
+  async function callForLoan(event, apiKeyId, loanId, action, options) {
+    const { path: loanPath, ...request } = options;
+    return callForPath(
+      apiKeyId,
+      action,
+      `/encompass/v3/loans/${encodeURIComponent(loanId)}${loanPath}`,
+      request,
+    );
   }
 
   async function fetchSchema(path, ids, token) {
@@ -715,6 +783,350 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     return json(200, { loanId, updated: updates.length });
   }
 
+  async function createLoan(event, apiKeyId) {
+    const query = pickLooseQuery(event.queryStringParameters, [
+      "loanFolder",
+      "view",
+      "action",
+      "loId",
+      "templateType",
+      "templatePath",
+    ]);
+    if (!query) return error(400, "Invalid loan query");
+    const loanFolder = String(query.loanFolder || "").trim();
+    if (!loanFolder) return error(400, "loanFolder is required");
+    query.loanFolder = loanFolder;
+    query.view = query.view || "id";
+
+    const parsed = parseJsonBody(event, MAX_APPLICATION_BYTES);
+    if (parsed.response) return parsed.response;
+    if (!isRecord(parsed.value)) return error(400, "Body must be a LoanContract object");
+
+    const scoped = await callForPath(apiKeyId, "LOAN_CREATE", "/encompass/v3/loans", {
+      method: "POST",
+      query,
+      body: parsed.value,
+    });
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    const loanId = extractLoanId(scoped.result.body, scoped.result.response);
+    if (!loanId) return error(502, "Encompass did not return a loan id");
+
+    log("INFO", "LOAN_CREATED", { loanId, view: query.view });
+    return json(201, { loanId, data: scoped.result.body ?? null });
+  }
+
+  async function updateApplication(event, apiKeyId, loanId) {
+    const query = pickLooseQuery(event.queryStringParameters, ["view", "action", "lockId"]);
+    if (!query) return error(400, "Invalid application query");
+    query.view = query.view || "id";
+
+    const parsed = parseJsonBody(event, MAX_APPLICATION_BYTES);
+    if (parsed.response) return parsed.response;
+    if (!isRecord(parsed.value) || Object.keys(parsed.value).length === 0) {
+      return error(400, "Body must be a non-empty LoanContract object");
+    }
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "APPLICATION_UPDATE",
+      `/encompass/v3/loans/${encodeURIComponent(loanId)}`,
+      { method: "PATCH", query, body: parsed.value },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "APPLICATION_UPDATED", { loanId, view: query.view });
+    return json(200, { loanId, updated: true, data: scoped.result.body ?? null });
+  }
+
+  async function listMilestones(apiKeyId, loanId) {
+    const scoped = await callForPath(
+      apiKeyId,
+      "MILESTONES_LIST",
+      `/encompass/v1/loans/${encodeURIComponent(loanId)}/milestones`,
+      { method: "GET" },
+    );
+    if (scoped.response) return scoped.response;
+    const { result } = scoped;
+    if (!result.response.ok) return upstreamFailure(result);
+
+    const milestones = Array.isArray(result.body)
+      ? result.body
+      : Array.isArray(result.body && result.body.milestones)
+        ? result.body.milestones
+        : null;
+    if (!milestones) return error(502, "Invalid Encompass response");
+
+    log("INFO", "MILESTONES_READ", { loanId, count: milestones.length });
+    return json(200, { loanId, milestones });
+  }
+
+  async function updateMilestone(event, apiKeyId, loanId, milestoneId) {
+    if (!validEntityId(milestoneId)) return error(400, "Invalid milestone id");
+    const query = pickQuery(event.queryStringParameters, ["action", "view"]);
+    if (!query || !["finish", "unfinish"].includes(query.action)) {
+      return error(400, "action must be finish or unfinish");
+    }
+
+    let payload;
+    if (event.body) {
+      const parsed = parseJsonBody(event);
+      if (parsed.response) return parsed.response;
+      if (!isRecord(parsed.value)) return error(400, "Body must be an object");
+      payload = parsed.value;
+    }
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "MILESTONE_UPDATE",
+      `/encompass/v1/loans/${encodeURIComponent(loanId)}/milestones/${encodeURIComponent(milestoneId)}`,
+      { method: "PATCH", query, body: payload },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "MILESTONE_UPDATED", { loanId, milestoneId, action: query.action });
+    return json(200, { loanId, milestoneId, action: query.action, data: scoped.result.body ?? null });
+  }
+
+  async function createDocuments(event, apiKeyId, loanId) {
+    const parsed = parseJsonBody(event);
+    if (parsed.response) return parsed.response;
+    const documents = parsed.value;
+    if (!Array.isArray(documents) || documents.length === 0 || documents.length > MAX_CONDITION_UPDATES) {
+      return error(400, `Body must be an array of 1-${MAX_CONDITION_UPDATES} documents`);
+    }
+    for (const document of documents) {
+      if (!isRecord(document) || typeof document.title !== "string" || !document.title.trim() || document.title.length > 255) {
+        return error(400, "Each document requires a title (max 255 chars)");
+      }
+    }
+
+    const query = pickQuery(event.queryStringParameters, ["view", "lockId"]);
+    if (!query) return error(400, "Invalid documents query");
+    query.action = "add";
+    query.view = query.view || "id";
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "DOCUMENTS_CREATE",
+      `/encompass/v3/loans/${encodeURIComponent(loanId)}/documents`,
+      { method: "PATCH", query, body: documents },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "DOCUMENTS_CREATED", { loanId, count: documents.length, view: query.view });
+    return json(200, { loanId, documents: scoped.result.body ?? null });
+  }
+
+  async function createConditions(event, apiKeyId, loanId) {
+    const parsed = parseJsonBody(event);
+    if (parsed.response) return parsed.response;
+    const conditions = parsed.value;
+    if (!Array.isArray(conditions) || conditions.length === 0 || conditions.length > MAX_CONDITION_UPDATES) {
+      return error(400, `Body must be an array of 1-${MAX_CONDITION_UPDATES} conditions`);
+    }
+    for (const condition of conditions) {
+      if (
+        !isRecord(condition) ||
+        typeof condition.title !== "string" ||
+        !condition.title.trim() ||
+        condition.title.length > 255 ||
+        typeof condition.conditionType !== "string" ||
+        !condition.conditionType.trim() ||
+        condition.conditionType.length > 100
+      ) {
+        return error(400, "Each condition requires title and conditionType");
+      }
+    }
+
+    const query = pickQuery(event.queryStringParameters, ["view", "lockId"]);
+    if (!query) return error(400, "Invalid conditions query");
+    query.action = "add";
+    query.view = query.view || "id";
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "CONDITIONS_CREATE",
+      `/encompass/v3/loans/${encodeURIComponent(loanId)}/conditions`,
+      { method: "PATCH", query, body: conditions },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "CONDITIONS_CREATED", { loanId, count: conditions.length, view: query.view });
+    return json(200, { loanId, conditions: scoped.result.body ?? null });
+  }
+
+  async function listConditionDocuments(event, apiKeyId, loanId, conditionId) {
+    if (!validEntityId(conditionId)) return error(400, "Invalid condition id");
+    const query = pickQuery(event.queryStringParameters, ["view", "start", "limit"]);
+    if (!query) return error(400, "Invalid condition documents query");
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "CONDITION_DOCUMENTS_LIST",
+      `/encompass/v3/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents`,
+      { method: "GET", query },
+    );
+    if (scoped.response) return scoped.response;
+    const { result } = scoped;
+    if (!result.response.ok) return upstreamFailure(result);
+
+    const documents = Array.isArray(result.body)
+      ? result.body
+      : Array.isArray(result.body && result.body.documents)
+        ? result.body.documents
+        : null;
+    if (!documents) return error(502, "Invalid Encompass response");
+
+    log("INFO", "CONDITION_DOCUMENTS_READ", { loanId, conditionId, count: documents.length });
+    return json(200, { loanId, conditionId, documents });
+  }
+
+  async function updateConditionDocuments(event, apiKeyId, loanId, conditionId) {
+    if (!validEntityId(conditionId)) return error(400, "Invalid condition id");
+    const query = pickQuery(event.queryStringParameters, ["action", "lockId", "view"]);
+    if (!query || !["add", "remove"].includes(query.action)) {
+      return error(400, "action must be add or remove");
+    }
+
+    const parsed = parseJsonBody(event);
+    if (parsed.response) return parsed.response;
+    const references = validEntityReferences(parsed.value);
+    if (!references) return error(400, `Body must be an array of 1-${MAX_CONDITION_UPDATES} document references`);
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "CONDITION_DOCUMENTS_UPDATE",
+      `/encompass/v3/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents`,
+      { method: "PATCH", query, body: references },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "CONDITION_DOCUMENTS_UPDATED", { loanId, conditionId, action: query.action, count: references.length });
+    return json(200, { loanId, conditionId, action: query.action, updated: references.length });
+  }
+
+  async function listStandardConditions(event, apiKeyId, loanId, rawType) {
+    const type = standardConditionType(rawType);
+    if (!type) return error(400, "condition type must be underwriting, preliminary, or postclosing");
+    const query = pickQuery(event.queryStringParameters, ["view", "start", "limit"]);
+    if (!query) return error(400, "Invalid standard conditions query");
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "STANDARD_CONDITIONS_LIST",
+      `/encompass/v1/loans/${encodeURIComponent(loanId)}/conditions/${type}`,
+      { method: "GET", query },
+    );
+    if (scoped.response) return scoped.response;
+    const { result } = scoped;
+    if (!result.response.ok) return upstreamFailure(result);
+
+    const conditions = Array.isArray(result.body)
+      ? result.body
+      : Array.isArray(result.body && result.body.conditions)
+        ? result.body.conditions
+        : null;
+    if (!conditions) return error(502, "Invalid Encompass response");
+
+    log("INFO", "STANDARD_CONDITIONS_READ", { loanId, conditionType: type, count: conditions.length });
+    return json(200, { loanId, conditionType: type, conditions });
+  }
+
+  async function createStandardCondition(event, apiKeyId, loanId, rawType) {
+    const type = standardConditionType(rawType);
+    if (!type) return error(400, "condition type must be underwriting, preliminary, or postclosing");
+    const query = pickQuery(event.queryStringParameters, ["view"]);
+    if (!query) return error(400, "Invalid standard condition query");
+
+    const parsed = parseJsonBody(event);
+    if (parsed.response) return parsed.response;
+    if (!isRecord(parsed.value) || Object.keys(parsed.value).length === 0) {
+      return error(400, "Body must be a non-empty standard condition object");
+    }
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "STANDARD_CONDITION_CREATE",
+      `/encompass/v1/loans/${encodeURIComponent(loanId)}/conditions/${type}`,
+      { method: "POST", query, body: parsed.value },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "STANDARD_CONDITION_CREATED", { loanId, conditionType: type });
+    return json(200, { loanId, conditionType: type, data: scoped.result.body ?? null });
+  }
+
+  async function updateStandardConditions(event, apiKeyId, loanId, rawType) {
+    const type = standardConditionType(rawType);
+    if (!type) return error(400, "condition type must be underwriting, preliminary, or postclosing");
+    const query = pickQuery(event.queryStringParameters, ["action", "view"]);
+    if (!query || !["add", "update", "remove"].includes(query.action)) {
+      return error(400, "action must be add, update, or remove");
+    }
+
+    const parsed = parseJsonBody(event);
+    if (parsed.response) return parsed.response;
+    if (!isRecord(parsed.value) && !Array.isArray(parsed.value)) {
+      return error(400, "Body must be a standard condition object or array");
+    }
+    if (Array.isArray(parsed.value) && (parsed.value.length === 0 || parsed.value.length > MAX_CONDITION_UPDATES)) {
+      return error(400, `Body must contain 1-${MAX_CONDITION_UPDATES} standard conditions`);
+    }
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "STANDARD_CONDITIONS_UPDATE",
+      `/encompass/v1/loans/${encodeURIComponent(loanId)}/conditions/${type}`,
+      { method: "PATCH", query, body: parsed.value },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "STANDARD_CONDITIONS_UPDATED", { loanId, conditionType: type, action: query.action });
+    return json(200, { loanId, conditionType: type, action: query.action, data: scoped.result.body ?? null });
+  }
+
+  async function updateStandardConditionDocuments(event, apiKeyId, loanId, rawType, conditionId) {
+    const type = standardConditionType(rawType);
+    if (!type) return error(400, "condition type must be underwriting, preliminary, or postclosing");
+    if (!validEntityId(conditionId)) return error(400, "Invalid condition id");
+    const query = pickQuery(event.queryStringParameters, ["action", "view"]);
+    if (!query || !["add", "remove"].includes(query.action)) {
+      return error(400, "action must be add or remove");
+    }
+
+    const parsed = parseJsonBody(event);
+    if (parsed.response) return parsed.response;
+    const references = validEntityReferences(parsed.value);
+    if (!references) return error(400, `Body must be an array of 1-${MAX_CONDITION_UPDATES} document references`);
+
+    const scoped = await callForPath(
+      apiKeyId,
+      "STANDARD_CONDITION_DOCUMENTS_UPDATE",
+      `/encompass/v1/loans/${encodeURIComponent(loanId)}/conditions/${type}/${encodeURIComponent(conditionId)}/documents`,
+      { method: "PATCH", query, body: references },
+    );
+    if (scoped.response) return scoped.response;
+    if (!scoped.result.response.ok) return upstreamFailure(scoped.result);
+
+    log("INFO", "STANDARD_CONDITION_DOCUMENTS_UPDATED", {
+      loanId,
+      conditionType: type,
+      conditionId,
+      action: query.action,
+      count: references.length,
+    });
+    return json(200, { loanId, conditionType: type, conditionId, action: query.action, updated: references.length });
+  }
+
   async function provision(event, requestId) {
     let payload;
     try {
@@ -999,14 +1411,61 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       }
 
       let match;
+      if (path === "/v1/loans") {
+        if (method === "POST") return await createLoan(event, apiKeyId);
+        return error(405, "Method not allowed");
+      }
       if ((match = path.match(/^\/v1\/loans\/([^/]+)\/(documents|conditions|attachmentUploadUrl|attachmentDownloadUrl)$/))) {
         const loanId = decode(match[1]);
         const resource = match[2];
         if (resource === "documents" && method === "GET") return await listDocuments(event, apiKeyId, loanId);
+        if (resource === "documents" && method === "POST") return await createDocuments(event, apiKeyId, loanId);
         if (resource === "conditions" && method === "GET") return await listConditions(event, apiKeyId, loanId);
+        if (resource === "conditions" && method === "POST") return await createConditions(event, apiKeyId, loanId);
         if (resource === "conditions" && method === "PATCH") return await updateConditions(event, apiKeyId, loanId);
         if (resource === "attachmentUploadUrl" && method === "POST") return await initiateAttachmentUpload(event, apiKeyId, loanId);
         if (resource === "attachmentDownloadUrl" && method === "POST") return await downloadAttachmentUrls(event, apiKeyId, loanId);
+        return error(405, "Method not allowed");
+      }
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/application$/))) {
+        if (method === "PATCH") return await updateApplication(event, apiKeyId, decode(match[1]));
+        return error(405, "Method not allowed");
+      }
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/milestones$/))) {
+        if (method === "GET") return await listMilestones(apiKeyId, decode(match[1]));
+        return error(405, "Method not allowed");
+      }
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/milestones\/([^/]+)$/))) {
+        if (method === "PATCH") {
+          return await updateMilestone(event, apiKeyId, decode(match[1]), decode(match[2]));
+        }
+        return error(405, "Method not allowed");
+      }
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/conditions\/([^/]+)\/documents$/))) {
+        const loanId = decode(match[1]);
+        const conditionId = decode(match[2]);
+        if (method === "GET") return await listConditionDocuments(event, apiKeyId, loanId, conditionId);
+        if (method === "PATCH") return await updateConditionDocuments(event, apiKeyId, loanId, conditionId);
+        return error(405, "Method not allowed");
+      }
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/standard-conditions\/([^/]+)\/([^/]+)\/documents$/))) {
+        if (method === "PATCH") {
+          return await updateStandardConditionDocuments(
+            event,
+            apiKeyId,
+            decode(match[1]),
+            decode(match[2]),
+            decode(match[3]),
+          );
+        }
+        return error(405, "Method not allowed");
+      }
+      if ((match = path.match(/^\/v1\/loans\/([^/]+)\/standard-conditions\/([^/]+)$/))) {
+        const loanId = decode(match[1]);
+        const conditionType = decode(match[2]);
+        if (method === "GET") return await listStandardConditions(event, apiKeyId, loanId, conditionType);
+        if (method === "POST") return await createStandardCondition(event, apiKeyId, loanId, conditionType);
+        if (method === "PATCH") return await updateStandardConditions(event, apiKeyId, loanId, conditionType);
         return error(405, "Method not allowed");
       }
       if ((match = path.match(/^\/v1\/loans\/([^/]+)$/))) {
@@ -1183,11 +1642,18 @@ function renderPortal({ role, error } = {}) {
           'GET    ' + base + '/v1/loans/{loanId}?fields=11,646',
           'GET    ' + base + '/v1/fields?ids=11,646,CX.TITLE.STATUS',
           'PATCH  ' + base + '/v1/loans/{loanId}',
+          'POST   ' + base + '/v1/loans?loanFolder=...',
+          'PATCH  ' + base + '/v1/loans/{loanId}/application',
+          'GET    ' + base + '/v1/loans/{loanId}/milestones',
+          'PATCH  ' + base + '/v1/loans/{loanId}/milestones/{milestoneId}?action=finish',
           'GET    ' + base + '/v1/loans/{loanId}/documents',
+          'POST   ' + base + '/v1/loans/{loanId}/documents',
           'POST   ' + base + '/v1/loans/{loanId}/attachmentUploadUrl',
           'POST   ' + base + '/v1/loans/{loanId}/attachmentDownloadUrl',
           'GET    ' + base + '/v1/loans/{loanId}/conditions',
+          'POST   ' + base + '/v1/loans/{loanId}/conditions',
           'PATCH  ' + base + '/v1/loans/{loanId}/conditions',
+          'GET    ' + base + '/v1/loans/{loanId}/standard-conditions/underwriting',
           'GET    ' + base + '/v1/jobs/{jobId}',
         ]);
         $('curl').textContent = lines([

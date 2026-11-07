@@ -146,13 +146,23 @@ test("per-role write allowlists are wired into the Lambda environment", () => {
   }
 });
 
-test("embedded handler includes documents, attachment upload/download, and conditions", () => {
+test("embedded handler includes the broker lifecycle and both condition modes", () => {
   for (const route of [
+    "/v1/loans",
+    "/application",
+    "/milestones",
     "/documents",
     "/attachmentUploadUrl",
     "/attachmentDownloadUrl",
     "/conditions",
-    "CONDITIONS_UPDATED",
+    "/standard-conditions",
+    "LOAN_CREATED",
+    "APPLICATION_UPDATED",
+    "MILESTONE_UPDATED",
+    "DOCUMENTS_CREATED",
+    "CONDITIONS_CREATED",
+    "STANDARD_CONDITION_CREATED",
+    "CONDITION_DOCUMENTS_UPDATED",
     "ATTACHMENT_UPLOAD_INITIATED",
     "ATTACHMENT_DOWNLOAD_URLS_CREATED",
   ]) {

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Encompass API Passthrough Gateway | Community-Supported AWS Middleware</title>
-  <meta name="description" content="Community-supported, open-source AWS middleware for ICE Encompass: field-filtered reads, async FIFO writes, role-scoped vendor onboarding, field schema discovery, eFolder document listing, pre-signed attachment upload and download, and enhanced-condition read/respond. Deploy with one CloudFormation template.">
+  <meta name="description" content="Community-supported, open-source AWS middleware for ICE Encompass: field-filtered reads, async FIFO writes, full/chunked loan registration, milestones, eFolder document creation/upload/download, enhanced and standard conditions, and role-scoped onboarding. Deploy with one CloudFormation template.">
   <meta name="keywords" content="Encompass API, ICE Encompass, mortgage middleware, AWS Lambda, CloudFormation, API gateway, field schema, Encompass custom fields, open source">
   <meta name="author" content="Community contributors">
   <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large,max-video-preview:-1">
@@ -15,7 +15,7 @@
   <meta property="og:site_name" content="Encompass API Passthrough Gateway">
   <meta property="og:locale" content="en_US">
   <meta property="og:title" content="Encompass API Passthrough Gateway">
-  <meta property="og:description" content="Community-supported AWS middleware for field-filtered Encompass reads, async writes, role-scoped invites, field schema discovery, eFolder documents, pre-signed attachment upload and download, and enhanced conditions.">
+  <meta property="og:description" content="Community-supported AWS middleware for field-filtered Encompass reads, async writes, full/chunked loan registration, milestones, eFolder documents, enhanced and standard conditions, and role-scoped invites.">
   <meta property="og:url" content="https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Encompass API Passthrough Gateway">
@@ -36,7 +36,7 @@
         "@type": "SoftwareSourceCode",
         "@id": "https://spuds0588.github.io/Encompass-API-Passhrough-Middleware-Gateway-/#software",
         "name": "Encompass API Passthrough Gateway",
-        "description": "Stateless AWS middleware for field-filtered Encompass reads, asynchronous FIFO writes, role-scoped self-serve onboarding, standard and custom field schema discovery, eFolder document listing, pre-signed attachment upload and download, and enhanced-condition read/respond.",
+        "description": "Stateless AWS middleware for field-filtered Encompass reads, asynchronous FIFO writes, full and chunked loan registration, milestone submission, eFolder document creation/upload/download, enhanced and standard conditions, role-scoped self-serve onboarding, and field schema discovery.",
         "codeRepository": "https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-",
         "license": "https://opensource.org/license/mit",
         "programmingLanguage": {
@@ -104,7 +104,7 @@
             "name": "Can a broker read documents and respond to conditions?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, returns pre-signed download URLs, and reads or responds to enhanced conditions. Condition PATCH rejects retrieve-only status, statusDate, and statusOpen fields; tracking and internalDescription are writeable. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them."
+              "text": "Yes. The gateway registers full or chunked loan applications, drives Submittal/Resubmittal milestones, creates and lists eFolder documents, initiates pre-signed uploads, returns download URLs, and reads, creates, or updates both enhanced and standard conditions. It associates documents with either condition mode and supports prior-to-docs, prior-to-funding, and post-closing sets. Condition PATCH rejects retrieve-only status fields; tracking and internalDescription are writeable. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them."
             }
           },
           {
@@ -295,7 +295,7 @@
       <section class="hero" aria-labelledby="hero-title">
         <p class="kicker">Community-supported · MIT · AWS Lambda</p>
         <h1 id="hero-title">A small, stable API in front of ICE Encompass.</h1>
-        <p class="lede">An open-source, stateless middleware template for field-filtered reads, asynchronous FIFO writes, role-scoped vendor onboarding, field schema discovery, eFolder document upload and download, and enhanced conditions. It deploys into the lender's AWS account and keeps no loan database or mirror.</p>
+        <p class="lede">An open-source, stateless middleware template for field-filtered reads, asynchronous FIFO writes, full and chunked loan registration, milestones, role-scoped vendor onboarding, eFolder documents, and both enhanced and standard conditions. It deploys into the lender's AWS account and keeps no loan database or mirror.</p>
         <div class="actions">
           <a class="button primary" href="#deploy">Deploy the template</a>
           <a class="button" href="https://github.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-">Read the source</a>
@@ -348,8 +348,8 @@
             <p><code>GET /v1/fields?ids=11,646,CX.TITLE.STATUS</code> resolves standard and <code>CX.*</code> custom fields from Encompass's native schema APIs and reports <code>readOnly</code>/<code>fieldLock</code> when supplied.</p>
           </article>
           <article class="card">
-            <h3>Documents &amp; conditions</h3>
-            <p><code>GET /v1/loans/{id}/documents</code>, <code>POST /v1/loans/{id}/attachmentUploadUrl</code>, <code>POST /v1/loans/{id}/attachmentDownloadUrl</code>, and <code>GET</code>/<code>PATCH /v1/loans/{id}/conditions</code> cover eFolder documents and enhanced conditions. Condition PATCH rejects retrieve-only status fields; tracking and internalDescription are writeable. File bytes go straight to and from Encompass.</p>
+            <h3>Loan lifecycle</h3>
+            <p><code>POST /v1/loans</code>, <code>PATCH /v1/loans/{id}/application</code>, and milestone routes cover full or chunked registration and underwriting submission. Document create/upload/download and enhanced/standard condition routes cover prior-to-docs, prior-to-funding, and post-closing work. File bytes go straight to and from Encompass.</p>
           </article>
         </div>
       </section>
@@ -375,11 +375,17 @@
               <tr><td><code>GET</code></td><td><code>/v1/fields?ids=...</code></td><td>Standard and custom field definitions</td></tr>
               <tr><td><code>GET</code></td><td><code>/v1/loans/{id}?fields=...</code></td><td>Field-filtered loan read</td></tr>
               <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}</code></td><td>Enqueue an asynchronous loan update</td></tr>
-              <tr><td><code>GET</code></td><td><code>/v1/loans/{id}/documents</code></td><td>List eFolder borrower documents</td></tr>
+              <tr><td><code>POST</code></td><td><code>/v1/loans</code></td><td>Register a full V3 loan application</td></tr>
+              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}/application</code></td><td>Apply a chunked V3 application update</td></tr>
+              <tr><td><code>GET</code> / <code>PATCH</code></td><td><code>/v1/loans/{id}/milestones</code></td><td>Read or finish Submittal/Resubmittal milestones</td></tr>
+              <tr><td><code>GET</code> / <code>POST</code></td><td><code>/v1/loans/{id}/documents</code></td><td>List or create eFolder documents</td></tr>
               <tr><td><code>POST</code></td><td><code>/v1/loans/{id}/attachmentUploadUrl</code></td><td>Start a pre-signed attachment upload</td></tr>
               <tr><td><code>POST</code></td><td><code>/v1/loans/{id}/attachmentDownloadUrl</code></td><td>Get pre-signed attachment download URLs</td></tr>
-              <tr><td><code>GET</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Read enhanced loan conditions</td></tr>
-              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Respond to a condition via tracking; retrieve-only status fields rejected</td></tr>
+              <tr><td><code>GET</code> / <code>POST</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Read or create enhanced loan conditions</td></tr>
+              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}/conditions</code></td><td>Respond via tracking; retrieve-only status fields rejected</td></tr>
+              <tr><td><code>GET</code> / <code>PATCH</code></td><td><code>/v1/loans/{id}/conditions/{conditionId}/documents</code></td><td>List or associate enhanced-condition evidence</td></tr>
+              <tr><td><code>GET</code> / <code>POST</code> / <code>PATCH</code></td><td><code>/v1/loans/{id}/standard-conditions/{type}</code></td><td>Read, create, or update standard conditions</td></tr>
+              <tr><td><code>PATCH</code></td><td><code>/v1/loans/{id}/standard-conditions/{type}/{conditionId}/documents</code></td><td>Associate standard-condition evidence</td></tr>
               <tr><td><code>GET</code></td><td><code>/v1/jobs/{id}</code></td><td>Job status, scoped to the owning tenant</td></tr>
             </tbody>
           </table>
@@ -457,7 +463,7 @@
         </details>
         <details>
           <summary>Can a broker read documents and respond to conditions?</summary>
-          <p>Yes. The gateway lists eFolder documents, initiates Encompass's pre-signed attachment upload, returns pre-signed download URLs, and reads or responds to enhanced conditions. Condition PATCH rejects retrieve-only status, statusDate, and statusOpen fields; tracking and internalDescription are writeable. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them.</p>
+          <p>Yes. The gateway registers full or chunked loan applications, drives Submittal/Resubmittal milestones, creates and lists eFolder documents, initiates pre-signed uploads, returns download URLs, and reads, creates, or updates both enhanced and standard conditions. It associates documents with either condition mode and supports prior-to-docs, prior-to-funding, and post-closing sets. Condition PATCH rejects retrieve-only status fields; tracking and internalDescription are writeable. File bytes move directly between the vendor and Encompass storage; the gateway never proxies or stores them.</p>
         </details>
         <details>
           <summary>What license is the project under?</summary>

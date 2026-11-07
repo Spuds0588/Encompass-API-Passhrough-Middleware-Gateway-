@@ -62,10 +62,12 @@ const DEFAULT_CONDITIONS = {
       conditionType: "Underwriting",
       title: "Provide signed federal tax returns",
       internalDescription: "All pages and schedules for the last two years.",
+      priorTo: "Approval",
       status: "Requested",
       statusDate: "2026-11-01T12:00:00Z",
       statusOpen: true,
       isRemoved: false,
+      documentIds: [],
       tracking: [
         { status: "Requested", isChecked: true, date: "2026-11-01T12:00:00Z" },
         { status: "Received", isChecked: false },
@@ -82,8 +84,52 @@ const DEFAULT_CONDITIONS = {
       statusOpen: false,
       isRemoved: false,
       tracking: [{ status: "Cleared", isChecked: true, date: "2026-10-30T09:00:00Z" }],
+      documentIds: [],
     },
   ],
+};
+
+const DEFAULT_MILESTONES = {
+  "loan-1": [
+    { id: "milestone-submittal", milestoneName: "Submittal", doneIndicator: false },
+    { id: "milestone-resubmittal", milestoneName: "Resubmittal", doneIndicator: false },
+    { id: "milestone-docs", milestoneName: "Docs", doneIndicator: false },
+    { id: "milestone-funding", milestoneName: "Funding", doneIndicator: false },
+  ],
+};
+
+const DEFAULT_STANDARD_CONDITIONS = {
+  "loan-1": {
+    underwriting: [
+      {
+        id: "std-underwriting-1",
+        title: "Provide initial underwriting package",
+        priorTo: "Docs",
+        status: "Requested",
+        isFulfilled: false,
+        documents: [],
+      },
+    ],
+    preliminary: [
+      {
+        id: "std-preliminary-1",
+        title: "Provide prior-to-funding title update",
+        priorTo: "Funding",
+        status: "Requested",
+        isFulfilled: false,
+        documents: [],
+      },
+    ],
+    postclosing: [
+      {
+        id: "std-postclosing-1",
+        title: "Provide recorded mortgage",
+        status: "Requested",
+        isFulfilled: false,
+        documents: [],
+      },
+    ],
+  },
 };
 
 const isCustomField = (id) => id.startsWith("CX.") || /^CUST\d{2}FV$/.test(id);
@@ -105,6 +151,8 @@ function startFakeEncompass({
   tokenTtlSeconds = 1800,
   documents = DEFAULT_DOCUMENTS,
   conditions = DEFAULT_CONDITIONS,
+  milestones = DEFAULT_MILESTONES,
+  standardConditions = DEFAULT_STANDARD_CONDITIONS,
   nestedFields = false,
 } = {}) {
   const state = {
@@ -118,6 +166,18 @@ function startFakeEncompass({
     documentReads: 0,
     conditionReads: 0,
     conditionUpdates: 0,
+    loanCreates: 0,
+    applicationUpdates: 0,
+    milestoneReads: 0,
+    milestoneUpdates: 0,
+    documentCreates: 0,
+    conditionCreates: 0,
+    conditionDocumentReads: 0,
+    conditionDocumentUpdates: 0,
+    standardConditionReads: 0,
+    standardConditionCreates: 0,
+    standardConditionUpdates: 0,
+    standardConditionDocumentUpdates: 0,
     uploadInitiations: 0,
     uploadPuts: 0,
     uploadedBytes: 0,
@@ -129,6 +189,8 @@ function startFakeEncompass({
     lockRemaining: new Map(Object.entries(lockAttempts)),
     documents: new Map(),
     conditions: new Map(),
+    milestones: new Map(),
+    standardConditions: new Map(),
     uploads: new Map(),
     contents: new Map(),
   };
@@ -139,6 +201,20 @@ function startFakeEncompass({
   }
   for (const [loanId, items] of Object.entries(conditions)) {
     if (state.loans.has(loanId)) state.conditions.set(loanId, JSON.parse(JSON.stringify(items)));
+  }
+  for (const [loanId, items] of Object.entries(milestones)) {
+    if (state.loans.has(loanId)) state.milestones.set(loanId, JSON.parse(JSON.stringify(items)));
+  }
+  for (const [loanId, sets] of Object.entries(standardConditions)) {
+    if (state.loans.has(loanId)) state.standardConditions.set(loanId, JSON.parse(JSON.stringify(sets)));
+  }
+  for (const loanId of state.loans.keys()) {
+    if (!state.documents.has(loanId)) state.documents.set(loanId, []);
+    if (!state.conditions.has(loanId)) state.conditions.set(loanId, []);
+    if (!state.milestones.has(loanId)) state.milestones.set(loanId, []);
+    if (!state.standardConditions.has(loanId)) {
+      state.standardConditions.set(loanId, { underwriting: [], preliminary: [], postclosing: [] });
+    }
   }
   for (const [loanId, docs] of state.documents) {
     for (const doc of docs) {
@@ -255,6 +331,53 @@ function startFakeEncompass({
       return send(res, 200, schemaEntries(url, true));
     }
 
+    if (req.method === "POST" && url.pathname === "/encompass/v3/loans") {
+      if (!url.searchParams.get("loanFolder")) return send(res, 400, { error: "loanFolder_required" });
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return send(res, 400, { error: "invalid_json" });
+      }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return send(res, 400, { error: "invalid_loan_contract" });
+      }
+      state.loanCreates += 1;
+      const loanId = `loan-created-${state.loanCreates}`;
+      state.loans.set(loanId, { ...payload, id: loanId });
+      state.documents.set(loanId, []);
+      state.conditions.set(loanId, []);
+      state.milestones.set(
+        loanId,
+        JSON.parse(JSON.stringify(state.milestones.get("loan-1") || DEFAULT_MILESTONES["loan-1"] || [])),
+      );
+      state.standardConditions.set(loanId, { underwriting: [], preliminary: [], postclosing: [] });
+      const view = url.searchParams.get("view") || "full";
+      const body = view === "id" ? [{ id: loanId }] : view === "entity" ? { id: loanId } : state.loans.get(loanId);
+      return send(res, 201, body);
+    }
+
+    const v3LoanMatch = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)$/);
+    if (v3LoanMatch) {
+      const loanId = decodeURIComponent(v3LoanMatch[1]);
+      const loan = state.loans.get(loanId);
+      if (req.method !== "PATCH") return send(res, 405, { error: "method_not_allowed" });
+      if (!loan) return send(res, 404, { error: "loan_not_found" });
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return send(res, 400, { error: "invalid_json" });
+      }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return send(res, 400, { error: "invalid_loan_contract" });
+      }
+      state.applicationUpdates += 1;
+      Object.assign(loan, payload);
+      const view = url.searchParams.get("view") || "entity";
+      return send(res, 200, view === "id" ? { id: loanId } : loan);
+    }
+
     const documentsMatch = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)\/documents$/);
     if (documentsMatch && req.method === "GET") {
       const loanId = decodeURIComponent(documentsMatch[1]);
@@ -274,6 +397,41 @@ function startFakeEncompass({
       return send(res, 200, page);
     }
 
+    if (documentsMatch && req.method === "PATCH") {
+      if (url.searchParams.get("action") !== "add") return send(res, 400, { error: "action_must_be_add" });
+      const loanId = decodeURIComponent(documentsMatch[1]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return send(res, 400, { error: "invalid_json" });
+      }
+      if (!Array.isArray(payload) || payload.length === 0) {
+        return send(res, 400, { error: "documents_required" });
+      }
+      const docs = state.documents.get(loanId) || [];
+      const created = [];
+      for (const item of payload) {
+        if (!item || typeof item.title !== "string" || !item.title.trim()) {
+          return send(res, 400, { error: "document_title_required" });
+        }
+        state.documentCreates += 1;
+        const document = {
+          ...item,
+          id: `doc-created-${state.documentCreates}`,
+          title: item.title.trim(),
+          isRemoved: false,
+          attachments: [],
+        };
+        docs.push(document);
+        created.push(document);
+      }
+      state.documents.set(loanId, docs);
+      const view = url.searchParams.get("view") || "id";
+      return send(res, 200, view === "id" ? created.map((item) => ({ id: item.id })) : created);
+    }
+
     const conditionsMatch = url.pathname.match(/^\/encompass\/v3\/loans\/([^/]+)\/conditions$/);
     if (conditionsMatch) {
       const loanId = decodeURIComponent(conditionsMatch[1]);
@@ -286,6 +444,40 @@ function startFakeEncompass({
         const type = url.searchParams.get("conditionType");
         if (type) visible = visible.filter((item) => item.conditionType === type);
         return send(res, 200, visible);
+      }
+
+      if (req.method === "PATCH" && url.searchParams.get("action") === "add") {
+        let payload;
+        try {
+          payload = JSON.parse(raw.toString("utf8"));
+        } catch {
+          return send(res, 400, { error: "invalid_json" });
+        }
+        if (!Array.isArray(payload) || payload.length === 0) {
+          return send(res, 400, { error: "conditions_required" });
+        }
+        const created = [];
+        for (const item of payload) {
+          if (!item || typeof item.title !== "string" || typeof item.conditionType !== "string") {
+            return send(res, 400, { error: "condition_title_and_type_required" });
+          }
+          state.conditionCreates += 1;
+          const condition = {
+            ...item,
+            id: `condition-created-${state.conditionCreates}`,
+            title: item.title.trim(),
+            status: item.status || "Requested",
+            statusDate: timestamp(),
+            statusOpen: true,
+            isRemoved: false,
+            documentIds: [],
+            tracking: item.tracking || [{ status: "Requested", isChecked: true, date: timestamp() }],
+          };
+          items.push(condition);
+          created.push(condition);
+        }
+        const view = url.searchParams.get("view") || "id";
+        return send(res, 200, view === "id" ? created.map((item) => ({ id: item.id })) : created);
       }
 
       if (req.method === "PATCH" && url.searchParams.get("action") === "update") {
@@ -324,6 +516,196 @@ function startFakeEncompass({
         }
         state.conditionUpdates += 1;
         return send(res, 200, updated);
+      }
+
+      return send(res, 405, { error: "method_not_allowed" });
+    }
+
+    const conditionDocumentsMatch = url.pathname.match(
+      /^\/encompass\/v3\/loans\/([^/]+)\/conditions\/([^/]+)\/documents$/,
+    );
+    if (conditionDocumentsMatch) {
+      const loanId = decodeURIComponent(conditionDocumentsMatch[1]);
+      const conditionId = decodeURIComponent(conditionDocumentsMatch[2]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      const condition = (state.conditions.get(loanId) || []).find((item) => item.id === conditionId);
+      if (!condition) return send(res, 404, { error: "condition_not_found" });
+      condition.documentIds = condition.documentIds || [];
+      const docs = state.documents.get(loanId) || [];
+
+      if (req.method === "GET") {
+        state.conditionDocumentReads += 1;
+        const linked = docs.filter((item) => condition.documentIds.includes(item.id));
+        return send(res, 200, linked);
+      }
+
+      if (req.method === "PATCH") {
+        const action = url.searchParams.get("action");
+        if (!["add", "remove"].includes(action)) return send(res, 400, { error: "invalid_action" });
+        let payload;
+        try {
+          payload = JSON.parse(raw.toString("utf8"));
+        } catch {
+          return send(res, 400, { error: "invalid_json" });
+        }
+        if (!Array.isArray(payload) || payload.length === 0) {
+          return send(res, 400, { error: "entity_references_required" });
+        }
+        for (const reference of payload) {
+          const id = reference && reference.entityId;
+          if (!id || !docs.some((item) => item.id === id)) return send(res, 404, { error: "document_not_found" });
+          if (action === "add" && !condition.documentIds.includes(id)) condition.documentIds.push(id);
+          if (action === "remove") condition.documentIds = condition.documentIds.filter((item) => item !== id);
+        }
+        state.conditionDocumentUpdates += 1;
+        const view = url.searchParams.get("view") || "id";
+        return send(res, 200, view === "id" ? payload.map((item) => ({ id: item.entityId })) : payload);
+      }
+
+      return send(res, 405, { error: "method_not_allowed" });
+    }
+
+    const milestonesMatch = url.pathname.match(/^\/encompass\/v1\/loans\/([^/]+)\/milestones$/);
+    if (milestonesMatch && req.method === "GET") {
+      const loanId = decodeURIComponent(milestonesMatch[1]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      state.milestoneReads += 1;
+      return send(res, 200, state.milestones.get(loanId) || []);
+    }
+
+    const milestoneMatch = url.pathname.match(/^\/encompass\/v1\/loans\/([^/]+)\/milestones\/([^/]+)$/);
+    if (milestoneMatch && req.method === "PATCH") {
+      const loanId = decodeURIComponent(milestoneMatch[1]);
+      const milestoneId = decodeURIComponent(milestoneMatch[2]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      const milestone = (state.milestones.get(loanId) || []).find((item) => item.id === milestoneId);
+      if (!milestone) return send(res, 404, { error: "milestone_not_found" });
+      const action = url.searchParams.get("action");
+      if (!["finish", "unfinish"].includes(action)) return send(res, 400, { error: "invalid_action" });
+      milestone.doneIndicator = action === "finish";
+      milestone.date = timestamp();
+      state.milestoneUpdates += 1;
+      return send(res, 204);
+    }
+
+    const standardDocumentsMatch = url.pathname.match(
+      /^\/encompass\/v1\/loans\/([^/]+)\/conditions\/(underwriting|preliminary|postclosing)\/([^/]+)\/documents$/,
+    );
+    if (standardDocumentsMatch && req.method === "PATCH") {
+      const loanId = decodeURIComponent(standardDocumentsMatch[1]);
+      const type = standardDocumentsMatch[2];
+      const conditionId = decodeURIComponent(standardDocumentsMatch[3]);
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      const sets = state.standardConditions.get(loanId) || {};
+      const condition = (sets[type] || []).find((item) => item.id === conditionId);
+      if (!condition) return send(res, 404, { error: "condition_not_found" });
+      const action = url.searchParams.get("action");
+      if (!["add", "remove"].includes(action)) return send(res, 400, { error: "invalid_action" });
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch {
+        return send(res, 400, { error: "invalid_json" });
+      }
+      if (!Array.isArray(payload) || payload.length === 0) {
+        return send(res, 400, { error: "entity_references_required" });
+      }
+      condition.documents = condition.documents || [];
+      for (const reference of payload) {
+        const id = reference && reference.entityId;
+        if (!id) return send(res, 400, { error: "entity_id_required" });
+        if (action === "add" && !condition.documents.some((item) => item.entityId === id)) {
+          condition.documents.push({ entityId: id, entityType: "Document" });
+        }
+        if (action === "remove") condition.documents = condition.documents.filter((item) => item.entityId !== id);
+      }
+      state.standardConditionDocumentUpdates += 1;
+      return send(res, 200, condition.documents);
+    }
+
+    const standardConditionsMatch = url.pathname.match(
+      /^\/encompass\/v1\/loans\/([^/]+)\/conditions\/(underwriting|preliminary|postclosing)$/,
+    );
+    if (standardConditionsMatch) {
+      const loanId = decodeURIComponent(standardConditionsMatch[1]);
+      const type = standardConditionsMatch[2];
+      if (!state.loans.has(loanId)) return send(res, 404, { error: "loan_not_found" });
+      const sets = state.standardConditions.get(loanId) || {
+        underwriting: [],
+        preliminary: [],
+        postclosing: [],
+      };
+      sets[type] = sets[type] || [];
+
+      if (req.method === "GET") {
+        state.standardConditionReads += 1;
+        return send(res, 200, sets[type]);
+      }
+
+      if (req.method === "POST") {
+        let payload;
+        try {
+          payload = JSON.parse(raw.toString("utf8"));
+        } catch {
+          return send(res, 400, { error: "invalid_json" });
+        }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+          return send(res, 400, { error: "invalid_condition" });
+        }
+        state.standardConditionCreates += 1;
+        const condition = {
+          ...payload,
+          id: `std-created-${state.standardConditionCreates}`,
+          status: payload.status || "Requested",
+          isFulfilled: payload.isFulfilled === true,
+          documents: [],
+        };
+        sets[type].push(condition);
+        state.standardConditions.set(loanId, sets);
+        return send(res, 200, condition);
+      }
+
+      if (req.method === "PATCH") {
+        const action = url.searchParams.get("action");
+        if (!["add", "update", "remove"].includes(action)) return send(res, 400, { error: "invalid_action" });
+        let payload;
+        try {
+          payload = JSON.parse(raw.toString("utf8"));
+        } catch {
+          return send(res, 400, { error: "invalid_json" });
+        }
+        const updates = Array.isArray(payload) ? payload : [payload];
+        if (updates.length === 0 || updates.some((item) => !item || typeof item !== "object")) {
+          return send(res, 400, { error: "invalid_condition" });
+        }
+        const changed = [];
+        for (const update of updates) {
+          if (action === "add") {
+            state.standardConditionCreates += 1;
+            const condition = {
+              ...update,
+              id: `std-created-${state.standardConditionCreates}`,
+              status: update.status || "Requested",
+              isFulfilled: update.isFulfilled === true,
+              documents: [],
+            };
+            sets[type].push(condition);
+            changed.push(condition);
+            continue;
+          }
+          const condition = sets[type].find((item) => item.id === update.id);
+          if (!condition) return send(res, 404, { error: "condition_not_found" });
+          if (action === "remove") {
+            sets[type] = sets[type].filter((item) => item.id !== update.id);
+            changed.push(condition);
+            continue;
+          }
+          Object.assign(condition, update);
+          changed.push(condition);
+        }
+        state.standardConditionUpdates += 1;
+        state.standardConditions.set(loanId, sets);
+        return send(res, 200, Array.isArray(payload) ? changed : changed[0]);
       }
 
       return send(res, 405, { error: "method_not_allowed" });
@@ -448,4 +830,12 @@ function startFakeEncompass({
   });
 }
 
-module.exports = { startFakeEncompass, DEFAULT_LOAN, DEFAULT_DOCUMENTS, DEFAULT_CONDITIONS, FIELD_DEFINITIONS };
+module.exports = {
+  startFakeEncompass,
+  DEFAULT_LOAN,
+  DEFAULT_DOCUMENTS,
+  DEFAULT_CONDITIONS,
+  DEFAULT_MILESTONES,
+  DEFAULT_STANDARD_CONDITIONS,
+  FIELD_DEFINITIONS,
+};

@@ -12,7 +12,31 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Pre-signed attachment upload initiation
 - [x] Pre-signed attachment download URLs and byte downloads
 - [x] Enhanced-condition read/respond
-- [ ] BLOCKED: live-tenant verification of the V3 document/upload/download/condition contracts
+- [x] Full and chunked V3 loan registration, milestone submission, document creation, and enhanced/standard condition lifecycle
+- [ ] BLOCKED: live-tenant verification of the lifecycle, document/upload/download, and condition contracts
+
+## Broker lifecycle extension (2026-11-07)
+
+- [x] Added `POST /v1/loans` for a full V3 `LoanContract`; requires `loanFolder`,
+  defaults `view=id`, and accepts up to 1 MB.
+- [x] Added `PATCH /v1/loans/{id}/application` for chunked V3 contract updates.
+- [x] Added `GET /v1/loans/{id}/milestones` and
+  `PATCH /v1/loans/{id}/milestones/{milestoneId}?action=finish|unfinish` for
+  Submittal and Resubmittal.
+- [x] Added `POST /v1/loans/{id}/documents` for eFolder document creation, then
+  reused the pre-signed upload flow for bytes and the existing document list.
+- [x] Added `POST /v1/loans/{id}/conditions`, plus enhanced-condition document
+  list/associate routes for prior-to-docs, prior-to-funding, and post-closing
+  evidence.
+- [x] Added standard V1 condition routes for `underwriting`, `preliminary`, and
+  `postclosing`: read, create, manage, and document association.
+- [x] Extended the fake and tests for full/chunked writes, milestones, document
+  creation, enhanced/standard condition creation and document association, and
+  a real-HTTP broker lifecycle.
+- [x] Local gate: `npm run verify` 89/89; template regenerated at 101,034 bytes
+  (SHA-256 `9f0323b8f2f7d6a6bf94481ae97e538f6e094789f4f9d3ac2a0122ada4dabab5`).
+- [ ] BLOCKED: verify the lifecycle routes against a live Encompass tenant and
+  AWS stack. Only local fake contracts and CI are proven here.
 
 ## MVP completeness audit (2026-11-07)
 
@@ -30,7 +54,8 @@ remain BLOCKED by missing credentials and are not claimed.
 - [x] Enforced retrieve-only condition fields: `PATCH` now returns `400` for
   `status`, `statusDate`, or `statusOpen`; added a regression test.
 - [x] Corrected the portal key copy to match idempotent recovery semantics.
-- [x] Full local gate: `npm run verify` 79/79, template in sync at 78,986 bytes
+- [x] MVP-audit local gate (superseded by the lifecycle extension):
+  `npm run verify` 79/79, template in sync at 78,986 bytes
   (SHA-256 `4e62005bcf5b85468c8d1ce75c6416493b80b50b8f4caa953a72c7fba766384e`);
   `bash -n deploy.sh`, `git diff --check`, `cfn-lint`, and Checkov pass.
 - [x] Recorded the audit outcome in `agents.md` and `history.md`; public docs,
@@ -50,7 +75,7 @@ remain BLOCKED by missing credentials and are not claimed.
 - [x] Scoped IAM role (no wildcard resources for data access)
 - [x] `deploy.sh` one-line CloudShell installer with outputs (superseded: now generates three role invite codes instead of an admin token)
 - [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (50,376 bytes after 2026-11-06 field/writeability work)
-- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 78,986 bytes)
+- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 101,034 bytes)
 
 ## Phase 2 — Token management & impersonation
 
@@ -188,9 +213,9 @@ speculatively.
   release tag or commit and verify SHA-256; use TLS-constrained curl; avoid
   passing the client secret through CLI process arguments where a pre-created
   secret ARN is practical. Add `cfn-lint` and an IaC security scan to CI.
-  Completed 2026-11-07: `deploy.sh` pins the template to the `v0.1.0` release tag
+  Completed 2026-11-07: `deploy.sh` pins the template to the `v0.2.0` release tag
   with SHA-256
-  `af75648d5a2382385dbad879076b7965526c6ce6698ca8f3a67ba4c3228e81fe`,
+  `9f0323b8f2f7d6a6bf94481ae97e538f6e094789f4f9d3ac2a0122ada4dabab5`,
   uses `curl --proto '=https' --tlsv1.2`, and aborts on a digest mismatch; the
   digest is the integrity anchor, so a moved tag fails closed. The client secret
   and invite codes are passed through a `0600` temporary JSON parameter file
@@ -217,7 +242,7 @@ speculatively.
 ### Template distribution decision (decided 2026-11-06)
 
 - [x] **Decided: keep one self-contained template and host it through S3 when
-  needed.** `template.yaml` is now **78,986 bytes**, over the 51,200-byte direct
+  needed.** `template.yaml` is now **101,034 bytes**, over the 51,200-byte direct
   limit. `deploy.sh` auto-creates/reuses an artifact bucket and passes
   `--s3-bucket` (S3-hosted limit 1 MB); the build enforces 1,000,000 bytes and
   names the delivery mode. Direct console upload is no longer supported for this
@@ -260,8 +285,9 @@ speculatively.
 - [x] Add fake Encompass state and contract tests for documents, upload
   initiation plus real pre-signed PUT/GET round trips, attachment download, and
   condition read/respond (68/68 pass at that milestone).
-- [ ] Add a structured 1003/application write surface or a validated broker field
-  pack. Current field `PATCH` is capped at 100 fields and is non-transactional.
+- [x] Add structured application writes: V3 loan create and chunked application
+  update routes now cover full applications; the legacy field `PATCH` remains
+  capped at 100 fields and non-transactional.
 - [ ] BLOCKED: verify these V3 document/upload/condition routes against a live
   Encompass tenant. Only the local fake contract is proven here.
 
@@ -304,6 +330,6 @@ Do not re-propose these without a new user or lender requirement recorded in
 
 Run `deploy.sh` in AWS CloudShell with real Encompass credentials, open one printed
 role invite link, provision a key, then execute the smoke sequence in `README.md`
-(§ Deploy), including the document list, pre-signed upload, attachment download,
-and condition read/respond flow. Replace the BLOCKED items above with sanitized
-results.
+(§ Deploy), including full/chunked registration, milestone submission, document
+create/upload/download, and enhanced/standard condition association and
+fulfillment. Replace the BLOCKED items above with sanitized results.
