@@ -786,3 +786,25 @@ BLOCKED by missing credentials and are not claimed.
 - Live AWS deployment and live Encompass lifecycle contracts remain BLOCKED and
   are not claimed. Commit, push, CI, Pages, tag, and raw/live verification are
   pending for this entry.
+
+## 2026-11-07 — Lifecycle extension delivery verification
+
+- Released commit `e4667b412c854eaef14ae2f0bf951662faf9393e` and created annotated
+  tag `v0.2.0`, which resolves to that commit. `deploy.sh` now defaults to the
+  tag and verifies the template digest before deployment.
+- CI run `42334866334` completed successfully on the exact release SHA for
+  `verify (20)`, `verify (24)`, and `iac`.
+- GitHub Pages reported `built` for the same SHA at
+  `2026-11-07T03:38:07Z`; the live `index.html` and `llms.txt` matched the
+  committed files byte-for-byte.
+- The tagged raw `template.yaml` matched the local artifact exactly: 101,034
+  bytes, SHA-256
+  `9f0323b8f2f7d6a6bf94481ae97e538f6e094789f4f9d3ac2a0122ada4dabab5`.
+  The same digest is pinned in `deploy.sh`.
+- Every changed artifact fetched at the release SHA matched locally: `README.md`,
+  `agents.md`, `deploy.sh`, `dev/fake-encompass.js`, `history.md`, `index.html`,
+  `llms.txt`, `package.json`, `src/gateway.js`, `template.yaml`, the three test
+  files, and `todo.md`.
+- This verification entry is a docs-only follow-up commit. Its own CI/Pages run
+  is reported in the delivery response; no code or template changed after the
+  verified release commit.
