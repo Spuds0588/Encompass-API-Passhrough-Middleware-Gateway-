@@ -305,6 +305,41 @@ test("worker gives up after the maximum number of attempts", async () => {
   assert.equal(job.attempts, 5);
 });
 
+test("request ids correlate responses, jobs, queues, and worker logs", async () => {
+  const health = await handler(httpEvent({ path: "/health" }));
+  assert.equal(health.headers["x-request-id"], "request-1");
+
+  const missing = await handler(httpEvent({ path: "/nope" }));
+  assert.equal(missing.headers["x-request-id"], "request-1");
+
+  const generated = await handler({ httpMethod: "GET", path: "/health" });
+  assert.match(
+    generated.headers["x-request-id"],
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
+
+  const accepted = await enqueue();
+  const job = parse(accepted);
+  assert.equal(job.requestId, "request-1");
+  assert.equal(store.queue[0].requestId, "request-1");
+  assert.equal((await store.getJob(job.jobId)).requestId, "request-1");
+
+  const message = store.queue.pop();
+  const logs = [];
+  const original = console.log;
+  console.log = (line) => logs.push(JSON.parse(line));
+  try {
+    await handler(queueEvent(message, 1));
+  } finally {
+    console.log = original;
+  }
+  assert.ok(logs.length > 0);
+  assert.ok(logs.every((entry) => entry.requestId === "request-1"));
+
+  const status = parse(await handler(httpEvent({ path: `/v1/jobs/${job.jobId}` })));
+  assert.equal(status.requestId, "request-1");
+});
+
 test("inactive tenants are denied across authenticated routes", async () => {
   await store.putTenant({
     apiKeyId: "key-1",

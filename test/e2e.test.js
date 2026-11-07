@@ -31,6 +31,7 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     const health = await request(`${gateway.url}/health`);
     assert.equal(health.status, 200);
     assert.deepEqual(health.body, { status: "ok" });
+    assert.ok(health.headers.get("x-request-id"));
 
     const landing = await request(`${gateway.url}/portal`);
     assert.equal(landing.status, 200);
@@ -105,11 +106,13 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     });
     assert.equal(accepted.status, 202);
     assert.equal(accepted.body.status, "ACCEPTED");
+    assert.equal(accepted.body.requestId, accepted.headers.get("x-request-id"));
 
     const pending = await request(`${gateway.url}/v1/jobs/${accepted.body.jobId}`, {
       headers: { "x-api-key": apiKey },
     });
     assert.equal(pending.body.status, "PENDING");
+    assert.equal(pending.body.requestId, accepted.body.requestId);
 
     const drained = await request(`${gateway.url}/dev/drain`, { method: "POST" });
     assert.equal(drained.body.processed, 1);
@@ -119,6 +122,7 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
       headers: { "x-api-key": apiKey },
     });
     assert.equal(completed.body.status, "COMPLETED");
+    assert.equal(completed.body.requestId, accepted.body.requestId);
     assert.equal(fake.state.loans.get("loan-1")[1109], 525000);
 
     const lockedAccepted = await request(`${gateway.url}/v1/loans/loan-locked`, {

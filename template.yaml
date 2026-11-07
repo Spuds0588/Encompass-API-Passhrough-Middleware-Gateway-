@@ -2,8 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Encompass API Passthrough & Middleware Gateway: field-filtered read proxy,
   async FIFO write pipeline with retries, role-scoped API key portal, field
-  schema discovery, eFolder document/attachment passthrough, and enhanced
-  condition read/respond.
+  schema discovery, eFolder document/attachment passthrough, enhanced condition
+  read/respond, and request-ID-correlated access logs and alarms.
 
 Parameters:
   EncompassInstanceId:
@@ -170,6 +170,44 @@ Resources:
       AlarmActions:
         - !Ref OpsAlertTopic
 
+  GatewayErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gateway Lambda errors; search CloudWatch logs for the request ID.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GatewayFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsAlertTopic
+
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: API Gateway 5XX responses; correlate the request ID with access logs.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub "${AWS::StackName}-api"
+        - Name: Stage
+          Value: !Ref ApiStage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsAlertTopic
+
   WriteQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -236,6 +274,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${GatewayFunction}"
       RetentionInDays: !Ref LogRetentionInDays
 
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-access"
+      RetentionInDays: !Ref LogRetentionInDays
+
   GatewayFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -281,6 +325,7 @@ Resources:
          * ships with the Lambda runtime, so it can be embedded as CloudFormation
          * inline code (ZipFile).
          */
+         const { AsyncLocalStorage } = require("node:async_hooks");
          const { randomUUID, timingSafeEqual } = require("node:crypto");
          const DEFAULT_FIELDS = "11,12,14,1109";
          const MAX_FIELDS = 100;
@@ -324,8 +369,21 @@ Resources:
          // tenant's projection or schema results.
          const readCache = new Map();
          const fieldCache = new Map();
+         const requestContext = new AsyncLocalStorage();
+         const currentRequestId = () => {
+         const context = requestContext.getStore();
+         return context && context.requestId;
+         };
          const log = (level, action, details = {}) =>
-         console.log(JSON.stringify({ timestamp: new Date().toISOString(), level, action, ...details }));
+         console.log(
+         JSON.stringify({
+         timestamp: new Date().toISOString(),
+         level,
+         action,
+         requestId: currentRequestId(),
+         ...details,
+         }),
+         );
          const json = (statusCode, body, headers = {}) => ({
          statusCode,
          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers },
@@ -699,10 +757,12 @@ Resources:
          return error(403, "Field not writable for this role", { fields: blocked.slice(0, 20) });
          }
          }
+         const requestId = currentRequestId() || null;
          const createdAt = new Date(now()).toISOString();
          const jobId = `job_${randomUUID()}`;
          const job = {
          jobId,
+         requestId,
          loanId,
          apiKeyId,
          encompassUserId: tenant.encompassUserId,
@@ -715,14 +775,14 @@ Resources:
          };
          await store.putJob(job);
          try {
-         await store.enqueueWrite({ jobId, loanId, fields: payload.fields });
+         await store.enqueueWrite({ jobId, loanId, fields: payload.fields, requestId });
          } catch (err) {
          await store.putJob({ ...job, status: "FAILED", error: "Queue unavailable", updatedAt: new Date(now()).toISOString() });
          log("ERROR", "WRITE_ENQUEUE_FAILED", { jobId, loanId, message: err.message });
          return error(503, "Write queue unavailable");
          }
          log("INFO", "WRITE_ENQUEUED", { jobId, loanId, apiKeyId, fieldCount: Object.keys(payload.fields).length });
-         return json(202, { status: "ACCEPTED", jobId, loanId, statusUrl: `/v1/jobs/${jobId}` });
+         return json(202, { status: "ACCEPTED", jobId, loanId, requestId, statusUrl: `/v1/jobs/${jobId}` });
          }
          async function jobStatus(apiKeyId, jobId) {
          const tenant = await tenantFor(apiKeyId);
@@ -731,6 +791,7 @@ Resources:
          if (!job || job.apiKeyId !== apiKeyId) return error(404, "Job not found");
          return json(200, {
          jobId: job.jobId,
+         requestId: job.requestId || null,
          loanId: job.loanId,
          status: job.status,
          attempts: job.attempts,
@@ -960,10 +1021,16 @@ Resources:
          const batchItemFailures = [];
          for (const record of records) {
          const attempts = Number(record.attributes && record.attributes.ApproximateReceiveCount) || 1;
-         let jobId;
+         let message = {};
          try {
-         const message = JSON.parse(record.body || "{}");
-         jobId = message.jobId;
+         message = JSON.parse(record.body || "{}");
+         } catch {
+         message = {};
+         }
+         const jobId = message.jobId;
+         const requestId = message.requestId || `sqs_${record.messageId || randomUUID()}`;
+         await requestContext.run({ requestId }, async () => {
+         try {
          await processWrite(message, attempts);
          } catch (err) {
          log("WARN", "WRITE_RETRY_SCHEDULED", {
@@ -974,13 +1041,14 @@ Resources:
          });
          batchItemFailures.push({ itemIdentifier: record.messageId });
          }
+         });
          }
          return { batchItemFailures };
          }
          async function handleHttp(event) {
          const method = String(event.httpMethod || (event.requestContext && event.requestContext.http && event.requestContext.http.method) || "GET").toUpperCase();
          const path = event.path || event.rawPath || "/";
-         const requestId = event.requestContext && event.requestContext.requestId;
+         const requestId = currentRequestId() || (event.requestContext && event.requestContext.requestId);
          const apiKeyId = event.requestContext && event.requestContext.identity && event.requestContext.identity.apiKeyId;
          const started = now();
          log("INFO", "REQUEST_RECEIVED", { requestId, method, path, apiKeyId });
@@ -1036,7 +1104,13 @@ Resources:
          if (Array.isArray(records) && records.length > 0 && records[0].eventSource === "aws:sqs") {
          return handleQueue(records);
          }
-         return handleHttp(event || {});
+         const httpEvent = event || {};
+         const requestId = (httpEvent.requestContext && httpEvent.requestContext.requestId) || randomUUID();
+         return requestContext.run({ requestId }, async () => {
+         const response = await handleHttp(httpEvent);
+         if (response && response.headers) response.headers["x-request-id"] = requestId;
+         return response;
+         });
          };
          }
          function renderPortal({ role, error } = {}) {
@@ -1404,12 +1478,37 @@ Resources:
       RestApiId: !Ref Api
       Description: Encompass gateway deployment
 
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
   ApiStage:
     Type: AWS::ApiGateway::Stage
+    DependsOn:
+      - ApiDeployment
+      - ApiGatewayAccount
     Properties:
       RestApiId: !Ref Api
       DeploymentId: !Ref ApiDeployment
       StageName: prod
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength","apiKeyId":"$context.identity.apiKeyId"}
 
   UsagePlan:
     Type: AWS::ApiGateway::UsagePlan
@@ -1450,5 +1549,8 @@ Outputs:
     Description: FIFO queue that buffers Encompass writes.
     Value: !Ref WriteQueue
   AlertTopicArn:
-    Description: SNS topic for DLQ alarm notifications.
+    Description: SNS topic for gateway, API 5xx, and DLQ alarm notifications.
     Value: !Ref OpsAlertTopic
+  AccessLogGroupName:
+    Description: CloudWatch Logs group for metadata-only API Gateway access logs.
+    Value: !Ref ApiAccessLogGroup

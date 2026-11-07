@@ -2,8 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Encompass API Passthrough & Middleware Gateway: field-filtered read proxy,
   async FIFO write pipeline with retries, role-scoped API key portal, field
-  schema discovery, eFolder document/attachment passthrough, and enhanced
-  condition read/respond.
+  schema discovery, eFolder document/attachment passthrough, enhanced condition
+  read/respond, and request-ID-correlated access logs and alarms.
 
 Parameters:
   EncompassInstanceId:
@@ -170,6 +170,44 @@ Resources:
       AlarmActions:
         - !Ref OpsAlertTopic
 
+  GatewayErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gateway Lambda errors; search CloudWatch logs for the request ID.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GatewayFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsAlertTopic
+
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: API Gateway 5XX responses; correlate the request ID with access logs.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub "${AWS::StackName}-api"
+        - Name: Stage
+          Value: !Ref ApiStage
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsAlertTopic
+
   WriteQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -234,6 +272,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${GatewayFunction}"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-access"
       RetentionInDays: !Ref LogRetentionInDays
 
   GatewayFunction:
@@ -374,12 +418,37 @@ Resources:
       RestApiId: !Ref Api
       Description: Encompass gateway deployment
 
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
   ApiStage:
     Type: AWS::ApiGateway::Stage
+    DependsOn:
+      - ApiDeployment
+      - ApiGatewayAccount
     Properties:
       RestApiId: !Ref Api
       DeploymentId: !Ref ApiDeployment
       StageName: prod
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLength":"$context.responseLength","apiKeyId":"$context.identity.apiKeyId"}
 
   UsagePlan:
     Type: AWS::ApiGateway::UsagePlan
@@ -420,5 +489,8 @@ Outputs:
     Description: FIFO queue that buffers Encompass writes.
     Value: !Ref WriteQueue
   AlertTopicArn:
-    Description: SNS topic for DLQ alarm notifications.
+    Description: SNS topic for gateway, API 5xx, and DLQ alarm notifications.
     Value: !Ref OpsAlertTopic
+  AccessLogGroupName:
+    Description: CloudWatch Logs group for metadata-only API Gateway access logs.
+    Value: !Ref ApiAccessLogGroup

@@ -541,3 +541,29 @@ a new dated entry.
 - This verification entry is itself a docs-only follow-up commit; its own CI,
   Pages, raw `history.md`/`todo.md`, clean-worktree, and cleanup checks are
   reported in the delivery response.
+
+## 2026-11-06 — Request-ID correlation and operational alarms
+
+- Completed the highest unblocked P1: end-to-end request-ID correlation. API
+  Gateway request IDs (or a generated UUID fallback) now appear in every HTTP
+  response as `x-request-id`, on every write-job record, in the SQS message, in
+  `GET /v1/jobs/{id}`, and on every Lambda log line.
+- Used `AsyncLocalStorage` so existing operation logs inherit the request ID
+  without threading a parameter through every helper. Worker logs use the job's
+  originating request ID; older queued messages fall back to the SQS message ID.
+- Added metadata-only API Gateway access logging to
+  `/aws/apigateway/<stack>-access`. The JSON format records request ID, source IP,
+  request time, method, resource path, status, response length, and API key ID —
+  no query strings, headers, bodies, field values, or credentials.
+- Added the account-wide `ApiGatewayCloudWatchRole`/`ApiGatewayAccount`, plus
+  `GatewayErrorsAlarm` and `Api5xxAlarm` publishing to the existing
+  `OpsAlertTopic`. The format and alarms are guarded by template tests.
+- Local verification: `npm run build` produced 69,757 bytes; `npm test` passed
+  68/68, including a test that asserts the same request ID on the response,
+  accepted job, queue message, job record, job status, and every worker log
+  line. E2E also checks the response header and job-status correlation.
+- Updated `README.md`, `agents.md`, `llms.txt`, `index.html`, `todo.md`, and this
+  history. Not deployed to AWS, so access-log delivery and alarm firing remain
+  unverified.
+- This entry was written before the push; exact-SHA CI, Pages, raw bytes, and the
+  clean-worktree check are reported in the delivery response.

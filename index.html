@@ -334,6 +334,10 @@
             <p><code>PATCH /v1/loans/{id}</code> validates and enqueues a job, returns <code>202</code>, and retries Encompass file locks through SQS.</p>
           </article>
           <article class="card">
+            <h3>Request-ID tracing</h3>
+            <p>Every response returns <code>x-request-id</code>. Write jobs, SQS messages, worker logs, and metadata-only API Gateway access logs carry the same ID, with Lambda error and API 5xx alarms.</p>
+          </article>
+          <article class="card">
             <h3>Role-scoped onboarding</h3>
             <p>Title, broker, and appraisal invite links provision API keys locked to a server-side Encompass service-account persona. No admin token.</p>
           </article>

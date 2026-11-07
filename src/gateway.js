@@ -11,6 +11,7 @@
  * inline code (ZipFile).
  */
 
+const { AsyncLocalStorage } = require("node:async_hooks");
 const { randomUUID, timingSafeEqual } = require("node:crypto");
 
 const DEFAULT_FIELDS = "11,12,14,1109";
@@ -59,8 +60,22 @@ const FIELD_CATALOG = [
 const readCache = new Map();
 const fieldCache = new Map();
 
+const requestContext = new AsyncLocalStorage();
+const currentRequestId = () => {
+  const context = requestContext.getStore();
+  return context && context.requestId;
+};
+
 const log = (level, action, details = {}) =>
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), level, action, ...details }));
+  console.log(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level,
+      action,
+      requestId: currentRequestId(),
+      ...details,
+    }),
+  );
 
 const json = (statusCode, body, headers = {}) => ({
   statusCode,
@@ -484,10 +499,12 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       }
     }
 
+    const requestId = currentRequestId() || null;
     const createdAt = new Date(now()).toISOString();
     const jobId = `job_${randomUUID()}`;
     const job = {
       jobId,
+      requestId,
       loanId,
       apiKeyId,
       encompassUserId: tenant.encompassUserId,
@@ -501,7 +518,7 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     await store.putJob(job);
 
     try {
-      await store.enqueueWrite({ jobId, loanId, fields: payload.fields });
+      await store.enqueueWrite({ jobId, loanId, fields: payload.fields, requestId });
     } catch (err) {
       await store.putJob({ ...job, status: "FAILED", error: "Queue unavailable", updatedAt: new Date(now()).toISOString() });
       log("ERROR", "WRITE_ENQUEUE_FAILED", { jobId, loanId, message: err.message });
@@ -509,7 +526,7 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     }
 
     log("INFO", "WRITE_ENQUEUED", { jobId, loanId, apiKeyId, fieldCount: Object.keys(payload.fields).length });
-    return json(202, { status: "ACCEPTED", jobId, loanId, statusUrl: `/v1/jobs/${jobId}` });
+    return json(202, { status: "ACCEPTED", jobId, loanId, requestId, statusUrl: `/v1/jobs/${jobId}` });
   }
 
   async function jobStatus(apiKeyId, jobId) {
@@ -519,6 +536,7 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     if (!job || job.apiKeyId !== apiKeyId) return error(404, "Job not found");
     return json(200, {
       jobId: job.jobId,
+      requestId: job.requestId || null,
       loanId: job.loanId,
       status: job.status,
       attempts: job.attempts,
@@ -781,20 +799,28 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     const batchItemFailures = [];
     for (const record of records) {
       const attempts = Number(record.attributes && record.attributes.ApproximateReceiveCount) || 1;
-      let jobId;
+      let message = {};
       try {
-        const message = JSON.parse(record.body || "{}");
-        jobId = message.jobId;
-        await processWrite(message, attempts);
-      } catch (err) {
-        log("WARN", "WRITE_RETRY_SCHEDULED", {
-          jobId,
-          messageId: record.messageId,
-          attempts,
-          message: err.message,
-        });
-        batchItemFailures.push({ itemIdentifier: record.messageId });
+        message = JSON.parse(record.body || "{}");
+      } catch {
+        message = {};
       }
+      const jobId = message.jobId;
+      const requestId = message.requestId || `sqs_${record.messageId || randomUUID()}`;
+
+      await requestContext.run({ requestId }, async () => {
+        try {
+          await processWrite(message, attempts);
+        } catch (err) {
+          log("WARN", "WRITE_RETRY_SCHEDULED", {
+            jobId,
+            messageId: record.messageId,
+            attempts,
+            message: err.message,
+          });
+          batchItemFailures.push({ itemIdentifier: record.messageId });
+        }
+      });
     }
     return { batchItemFailures };
   }
@@ -802,7 +828,7 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
   async function handleHttp(event) {
     const method = String(event.httpMethod || (event.requestContext && event.requestContext.http && event.requestContext.http.method) || "GET").toUpperCase();
     const path = event.path || event.rawPath || "/";
-    const requestId = event.requestContext && event.requestContext.requestId;
+    const requestId = currentRequestId() || (event.requestContext && event.requestContext.requestId);
     const apiKeyId = event.requestContext && event.requestContext.identity && event.requestContext.identity.apiKeyId;
     const started = now();
 
@@ -864,7 +890,14 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     if (Array.isArray(records) && records.length > 0 && records[0].eventSource === "aws:sqs") {
       return handleQueue(records);
     }
-    return handleHttp(event || {});
+
+    const httpEvent = event || {};
+    const requestId = (httpEvent.requestContext && httpEvent.requestContext.requestId) || randomUUID();
+    return requestContext.run({ requestId }, async () => {
+      const response = await handleHttp(httpEvent);
+      if (response && response.headers) response.headers["x-request-id"] = requestId;
+      return response;
+    });
   };
 }
 

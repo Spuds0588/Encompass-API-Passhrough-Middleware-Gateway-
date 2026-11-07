@@ -97,6 +97,22 @@ test("DLQ depth alarm notifies an SNS topic", () => {
   assert.match(template, /HasOpsAlertEmail/);
 });
 
+test("request IDs, metadata-only access logs, and operational alarms are wired", () => {
+  assert.match(template, /AccessLogSetting:/);
+  assert.match(template, /AccessLogGroupName:/);
+  assert.match(template, /ApiGatewayCloudWatchRole:/);
+  assert.match(template, /AWS::ApiGateway::Account/);
+  assert.match(template, /GatewayErrorsAlarm:/);
+  assert.match(template, /Api5xxAlarm:/);
+  assert.match(template, /MetricName: 5XXError/);
+  assert.match(template, /Name: ApiName/);
+  assert.match(template, /"requestId":"\$context\.requestId"/);
+  assert.match(template, /"apiKeyId":"\$context\.identity\.apiKeyId"/);
+  assert.ok(!template.includes("$context.queryString"));
+  assert.ok(!template.includes("$context.requestBody"));
+  assert.ok(!template.includes("$context.requestHeader"));
+});
+
 test("per-role write allowlists are wired into the Lambda environment", () => {
   for (const name of ["TitleWriteFields", "BrokerWriteFields", "AppraisalWriteFields"]) {
     assert.match(template, new RegExp(`${name}:`));

@@ -135,15 +135,18 @@ Storage: DynamoDB tenants + persona tokens + jobs (TTL) · Secrets Manager (clie
 | `POST` | `/portal` | `{ role, code }` in body | `{ message, apiKey, tenantName, email, role, encompassUserId }` |
 | `GET` | `/v1/fields?ids=11,646,CX.TITLE.STATUS` | `x-api-key` | `{ "11": { description, type, readOnly?, fieldLock? }, ... }` |
 | `GET` | `/v1/loans/{id}?fields=11,12,1109` | `x-api-key` | `{ id, fields: { ... }, _cached }` |
-| `PATCH` | `/v1/loans/{id}` body `{ "fields": { "1109": 450000 } }` | `x-api-key` | `202 { status: "ACCEPTED", jobId, loanId, statusUrl }` |
+| `PATCH` | `/v1/loans/{id}` body `{ "fields": { "1109": 450000 } }` | `x-api-key` | `202 { status: "ACCEPTED", jobId, loanId, requestId, statusUrl }` |
 | `GET` | `/v1/loans/{id}/documents?view=full` | `x-api-key` | `{ loanId, documents: [...] }` (Encompass document objects unchanged) |
 | `POST` | `/v1/loans/{id}/attachmentUploadUrl` body `{ file, title?, assignTo? }` | `x-api-key` | Encompass `CreateAttachmentResponse` (`attachmentId`, `authorizationHeader`, `url`, `multiChunkRequired`, `expiresAt`) |
 | `POST` | `/v1/loans/{id}/attachmentDownloadUrl` body `{ "attachments": ["ATTACHMENT_ID"] }` | `x-api-key` | `{ loanId, downloads: [{ id, url, authorizationHeader?, contentType?, ... }] }` |
 | `GET` | `/v1/loans/{id}/conditions?conditionType=Underwriting` | `x-api-key` | `{ loanId, conditions: [...] }` (enhanced conditions) |
 | `PATCH` | `/v1/loans/{id}/conditions` body `[{ "id": "...", "tracking": [{ "status": "Received", "isChecked": true }] }]` | `x-api-key` | `{ loanId, updated }` |
-| `GET` | `/v1/jobs/{id}` | `x-api-key` | `{ jobId, loanId, status, attempts, createdAt, updatedAt, error }` |
+| `GET` | `/v1/jobs/{id}` | `x-api-key` | `{ jobId, requestId, loanId, status, attempts, createdAt, updatedAt, error }` |
 
 Job statuses: `PENDING` → `RETRYING` → `COMPLETED` / `FAILED`.
+Every response includes `x-request-id`. Write jobs store the originating request
+ID, return it from `GET /v1/jobs/{id}`, and the SQS worker logs the same ID on
+every attempt.
 Default read field set: `11,12,14,1109` (max 100 fields per request).
 Field lookups accept standard IDs, `CX.*` custom fields, and `CUSTnnFV` custom
 fields (max 100 per request), and cache results per persona for 5 minutes. The
@@ -253,15 +256,16 @@ exposes `POST /dev/drain` to run the SQS worker immediately.
 ## Tests
 
 ```bash
-npm test          # 66 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
+npm test          # 68 tests: handler unit/integration, HTTP e2e, template and static-page guards (CI: Node 20 + 24)
 npm run verify    # template in sync + npm test
 npm run build     # regenerate template.yaml after editing src/ or infra/
 ```
 
 Coverage highlights: token exchange and cache reuse/expiry, tenant isolation,
 field projection and validation, writeability metadata, inactive-tenant rejection,
-attachment download URLs plus a real byte download, read cache hits, 202 enqueue,
-job ownership, worker success, 423 retry-then-success,
+attachment download URLs plus a real byte download, request-ID correlation across
+HTTP responses, jobs, SQS, and worker logs, read cache hits, 202 enqueue, job
+ownership, worker success, 423 retry-then-success,
 permanent 4xx failure, attempt exhaustion, invite validation and role mismatch,
 persona locking, field schema lookup and caching, CSP on the portal, and template
 guards (API key requirement, FIFO + DLQ, SSE, bounded retention, no secret
@@ -291,6 +295,22 @@ history.md            append-only work log
 ```
 
 ## Operations
+
+### Request IDs, access logs, and alarms
+
+Every HTTP response includes `x-request-id`. The value is the API Gateway request
+ID when present and a generated UUID otherwise. The same ID is stored on each
+write job, carried in the SQS message, returned by `GET /v1/jobs/{id}`, and added
+to every Lambda log line, including worker retries.
+
+API Gateway access logs go to `/aws/apigateway/<stack>-access` in JSON and contain
+only metadata: request ID, source IP, request time, method, resource path, status,
+response length, and API key ID. Query strings, headers, request/response bodies,
+field values, and credentials are deliberately excluded.
+
+`GatewayErrorsAlarm` and `Api5xxAlarm` publish to `OpsAlertTopic` alongside
+`DeadLetterAlarm`; set `OpsAlertEmail` to receive them. The API alarms use the
+existing SNS topic and do not enable execution logging or data tracing.
 
 ### DLQ alarm and purge procedure
 
@@ -340,8 +360,10 @@ No loan database or mirror is maintained. The actual data paths are:
   responses are passed through and never stored or cached. File bytes go from the
   vendor directly to Encompass's pre-signed URL; the gateway never proxies them
   and never logs the upload authorization header.
-- **CloudWatch:** structured metadata logs only, never field values, tokens,
-  secrets, API keys, or upload credentials; retention is `LogRetentionInDays`.
+- **CloudWatch:** structured metadata logs with request IDs, plus metadata-only
+  API Gateway access logs. Neither contains query strings, headers, bodies, field
+  values, tokens, secrets, API keys, or upload credentials; retention is
+  `LogRetentionInDays`.
 
 Tenant records persist until removed from the table. See `todo.md` for the
 remaining deletion, alarm, and offboarding work.
@@ -353,8 +375,9 @@ remaining deletion, alarm, and offboarding work.
 - The Encompass persona is selected from the server-side role table; a
   client-supplied `encompassUserId` is ignored.
 - Invite links are bearer secrets. They appear in the URL query string by design,
-  so treat browser history, shared links, and any access logs as sensitive.
-  Rotate by updating the stack parameter; there is no self-service rotation UI.
+  so treat browser history and shared links as sensitive. The template's API
+  Gateway access-log format deliberately excludes query strings. Rotate by
+  updating the stack parameter; there is no self-service rotation UI.
 - API keys are created in API Gateway, attached to the usage plan, returned once,
   and never stored in plaintext. Only `apiKeyId` is persisted.
 - Every vendor route resolves the tenant from `requestContext.identity.apiKeyId`;
@@ -393,9 +416,12 @@ remaining deletion, alarm, and offboarding work.
 - `/v1/fields` exposes read-only metadata. Optional `TitleWriteFields`,
   `BrokerWriteFields`, and `AppraisalWriteFields` parameters add a gateway-level
   write allowlist; Encompass persona permissions remain the authorization control.
-- The template is about 66 KB, over CloudFormation's 51,200-byte direct-upload
+- The template is about 68 KB, over CloudFormation's 51,200-byte direct-upload
   limit. Use `deploy.sh` (S3-hosted) or upload the template to S3 yourself; the
   S3-hosted limit is 1,000,000 bytes.
+- Access logging configures one account-wide API Gateway CloudWatch role
+  (`ApiGatewayAccount`). In a shared account, confirm that this does not replace
+  a role another stack relies on before deploying.
 - The `EncompassBaseUrl` default is `https://api.elliemae.com`; override it for
   sandbox or instance-specific hosts.
 - `deploy.sh` pulls `template.yaml` from the `main` raw URL;

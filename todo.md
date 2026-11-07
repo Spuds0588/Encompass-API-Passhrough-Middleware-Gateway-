@@ -26,7 +26,7 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Scoped IAM role (no wildcard resources for data access)
 - [x] `deploy.sh` one-line CloudShell installer with outputs (superseded: now generates three role invite codes instead of an admin token)
 - [x] Generated template stays under CloudFormation's 51,200-byte direct-upload limit (50,376 bytes after 2026-11-06 field/writeability work)
-- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 66,120 bytes)
+- [x] Size-safe delivery after Phase 9: build enforces 1,000,000 bytes; `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket` above 51,200 bytes (template now 69,757 bytes)
 
 ## Phase 2 — Token management & impersonation
 
@@ -87,7 +87,7 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Production-shaped HTTP e2e: portal invite → key → fields → read → enqueue → worker → job → retry
 - [x] Template guards: resources, API key requirement, FIFO/DLQ, no secret defaults, invite parameters, native schema paths, size, in-sync
 - [x] 50/50 tests passing locally (`npm run verify`)
-- [x] 66/66 tests passing locally after attachment download (`npm run verify`; template 66,120 bytes, S3-hosted delivery)
+- [x] 68/68 tests passing locally after request-ID correlation (`npm run verify`; template 69,757 bytes, S3-hosted delivery)
 - [x] Field writeability/retention hardening verified at commit `83f0057` (CI run `42305287711` green on Node 20/24; Pages `built`; live index, docs, and template bytes verified)
 - [x] GitHub Actions CI on push and PR (tests + template sync)
 - [x] `cfn-lint` clean on the final template (exit 0)
@@ -140,10 +140,16 @@ speculatively.
   invite rotation; add a `SECURITY.md` with private vulnerability reporting. Keep
   invites shared per role; do not make them single-use. Make provisioning
   idempotent and clean up orphan keys on partial failure.
-- [ ] **P1 — Add end-to-end request-ID correlation.** Propagate the API Gateway
+- [x] **P1 — Add end-to-end request-ID correlation.** Propagate the API Gateway
   request ID through every operation, log entry, response header, and job record.
   Add metadata-only access logs if the template budget permits; add Lambda error,
   API 5xx, and DLQ alarms. Never enable full request/response body logging.
+  Completed 2026-11-06: every HTTP response returns `x-request-id`; write jobs
+  store it, SQS messages carry it, `GET /v1/jobs/{id}` returns it, and every
+  Lambda log line, including worker retries, inherits it through
+  AsyncLocalStorage. Added a metadata-only API Gateway access-log format,
+  `GatewayErrorsAlarm`, and `Api5xxAlarm` on the existing SNS topic. Not deployed
+  to AWS here; local tests prove the HTTP/job/queue/log propagation only.
 - [ ] **P1 — Harden `deploy.sh` against supply-chain and secret exposure.** Pin a
   release tag or commit and verify SHA-256; use TLS-constrained curl; avoid
   passing the client secret through CLI process arguments where a pre-created
@@ -163,7 +169,7 @@ speculatively.
 ### Template distribution decision (decided 2026-11-06)
 
 - [x] **Decided: keep one self-contained template and host it through S3 when
-  needed.** `template.yaml` is now **66,120 bytes**, over the 51,200-byte direct
+  needed.** `template.yaml` is now **69,757 bytes**, over the 51,200-byte direct
   limit. `deploy.sh` auto-creates/reuses an artifact bucket and passes
   `--s3-bucket` (S3-hosted limit 1 MB); the build enforces 1,000,000 bytes and
   names the delivery mode. Direct console upload is no longer supported for this
@@ -205,7 +211,7 @@ speculatively.
   proving the status change in contract tests.
 - [x] Add fake Encompass state and contract tests for documents, upload
   initiation plus real pre-signed PUT/GET round trips, attachment download, and
-  condition read/respond (66/66 pass).
+  condition read/respond (68/68 pass).
 - [ ] Add a structured 1003/application write surface or a validated broker field
   pack. Current field `PATCH` is capped at 100 fields and is non-transactional.
 - [ ] BLOCKED: verify these V3 document/upload/condition routes against a live

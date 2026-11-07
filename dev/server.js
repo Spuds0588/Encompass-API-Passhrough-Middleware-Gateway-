@@ -45,7 +45,12 @@ async function createDevGateway({ port = 0, fakeEncompass = null } = {}) {
         return {
           messageId: randomUUID(),
           eventSource: "aws:sqs",
-          body: JSON.stringify({ jobId: message.jobId, loanId: message.loanId, fields: message.fields }),
+          body: JSON.stringify({
+            jobId: message.jobId,
+            loanId: message.loanId,
+            fields: message.fields,
+            requestId: message.requestId,
+          }),
           attributes: { ApproximateReceiveCount: String(message.receives) },
         };
       });

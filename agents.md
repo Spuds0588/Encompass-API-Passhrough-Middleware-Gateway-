@@ -84,7 +84,7 @@ is a shared responsibility. Agents working here must not imply otherwise.
 
 ```bash
 npm run build     # regenerate template.yaml from infra + src
-npm test          # 66 tests: unit, HTTP e2e, template and static-page guards
+npm test          # 68 tests: unit, HTTP e2e, template and static-page guards
 npm run verify    # build --check + npm test (use before committing)
 npm run dev       # local gateway at :3000 with fake Encompass
 ```
@@ -98,11 +98,18 @@ npm run dev       # local gateway at :3000 with fake Encompass
 - Storage interface: `getSecret`, `getTenant`, `putTenant`, `getToken`,
   `putToken`, `getJob`, `putJob`, `enqueueWrite`, `createApiKey`.
 - Structured logs only: `log(level, ACTION, details)` → single-line JSON with
-  `timestamp`, `level`, `action`. Never log tokens, secrets, API keys, or full
-  upstream error bodies.
+  `timestamp`, `level`, `action`, and the current `requestId`. Never log tokens,
+  secrets, API keys, query strings, request/response bodies, or full upstream
+  error bodies.
+- Every HTTP response includes `x-request-id`; use the API Gateway request ID
+  when present and a generated UUID as the fallback. Job records, SQS messages,
+  worker logs, and job status responses preserve it.
+- API Gateway access logs are metadata-only. Never add query strings, headers,
+  bodies, field values, tokens, secrets, or keys to the access-log format.
 - Error responses are always `{ "error": "message", ...optionalCode }`.
 - API responses are `Cache-Control: no-store` except reads, which use
   `private, max-age=30` (never `public`: responses are tenant-scoped by API key).
+  All responses include `x-request-id`.
 - Reads project only requested fields and cap field lists at 100.
 - `/v1/fields` splits standard (`CX.`/`CUSTnnFV` excluded) and custom IDs, calls
   `schemas/loan/standardFields` and `settings/loan/customFields`, and normalizes
@@ -184,7 +191,7 @@ npm run dev       # local gateway at :3000 with fake Encompass
   (`.github/workflows/ci.yml`) and by fetching the raw `template.yaml` from
   GitHub, which is exactly what `deploy.sh` downloads.
 - `scripts/build.js` compacts the inlined deploy copy and enforces 1,000,000
-  bytes. The template is about 66 KB, above CloudFormation's 51,200-byte direct
+  bytes. The template is about 68 KB, above CloudFormation's 51,200-byte direct
   limit, so `deploy.sh` creates/reuses an S3 bucket and passes `--s3-bucket`
   (S3-hosted limit: 1 MB). Keep the source formatted; do not hand-edit
   `template.yaml`.
