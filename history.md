@@ -667,3 +667,29 @@ a new dated entry.
   controls, and new template size. No AWS or Encompass access was used; live
   deployment, KMS/PITR behavior, and CloudShell tag resolution remain
   unverified until the release is pushed and fetched.
+
+## 2026-11-07 — Deploy hardening production verification
+
+- Pushed implementation commit `3dd8feac946469374cdaebcc7fbc7d9f8c4d72e0`
+  (`feat: harden deploy supply chain and IaC scanning`).
+- CI run `42331446994` completed successfully on that exact SHA: `verify (20)`,
+  `verify (24)`, and the new `iac` job all succeeded.
+- GitHub Pages build `1347985079` reported `built` for the exact SHA.
+- Raw artifacts at the exact SHA matched the local files: `README.md` 28,943
+  bytes, `todo.md` 18,363, `history.md` 43,332, `llms.txt` 10,958,
+  `template.yaml` 78,534 (SHA-256
+  `af75648d5a2382385dbad879076b7965526c6ce6698ca8f3a67ba4c3228e81fe`),
+  `index.html` 28,724, `SECURITY.md` 5,867, `deploy.sh` 9,115,
+  `.checkov.yaml` 2,677, and `agents.md` 14,589.
+- The live page returned HTTP 200 and was byte-identical to `index.html` at
+  28,724 bytes; live `llms.txt` matched at 10,958 bytes.
+- Cleanup: removed `/tmp/iac-scan-venv` and scanner logs; no `node --test`,
+  dev-server, `cfn-lint`, or Checkov processes remained; no
+  `node_modules`/`dist`/`build`/`*.log` artifacts were present; the worktree was
+  clean before this docs entry.
+- Not verified: an actual CloudFormation deployment, DynamoDB PITR/KMS/SNS
+  behavior, and live Encompass traffic. CloudShell tag resolution is checked
+  after the `v0.1.0` tag is created in the delivery step.
+- This verification entry is itself a docs-only follow-up commit; its own CI,
+  Pages build, raw/live bytes, tag fetch, and clean-worktree checks are reported
+  in the delivery response.
