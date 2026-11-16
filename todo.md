@@ -14,6 +14,7 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Enhanced-condition read/respond
 - [x] Full and chunked V3 loan registration, milestone submission, document creation, and enhanced/standard condition lifecycle
 - [ ] BLOCKED: live-tenant verification of the lifecycle, document/upload/download, and condition contracts
+- [x] Parity research recorded in `docs/parity-implementation-notes.md` (2026-11-16): the route shapes behind document read/write, condition read/submit, and loan registration/submission, plus the open "submit loan file" contract question every repo shares
 
 ## Broker lifecycle extension (2026-11-07)
 

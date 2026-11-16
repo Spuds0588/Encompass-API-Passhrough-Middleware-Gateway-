@@ -808,3 +808,16 @@ BLOCKED by missing credentials and are not claimed.
 - This verification entry is a docs-only follow-up commit. Its own CI/Pages run
   is reported in the delivery response; no code or template changed after the
   verified release commit.
+
+## 2026-11-16 — Parity research recorded for documents, conditions, and loan submission
+
+- Wrote `docs/parity-implementation-notes.md`: the Encompass shapes that back family parity — `POST /v1/loans`
+  registration with a `loanFolder`, `PATCH /v1/loans/{id}/application`, milestone `finish`/`unfinish`, eFolder
+  document create plus pre-signed attachment upload/download, enhanced conditions, the standard
+  `underwriting`/`preliminary`/`postclosing` condition routes, and condition-scoped document association.
+- This repo already ships every one of those routes. The gap is a contract gap, not a route gap: "submit loan
+  file" has no single agreed meaning across the family, so the notes record the candidate mappings (milestone
+  flip, final condition/fee set, remaining documents) instead of inventing an endpoint.
+- No runtime code changed. `todo.md` links the notes from the top-priority section so later build work starts
+  from research rather than from scratch.
+- Daily check: zero open issues, zero open PRs, and zero closed issues on this repo.
