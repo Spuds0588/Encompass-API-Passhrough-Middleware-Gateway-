@@ -14,6 +14,9 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Enhanced-condition read/respond
 - [x] Full and chunked V3 loan registration, milestone submission, document creation, and enhanced/standard condition lifecycle
 - [ ] BLOCKED: live-tenant verification of the lifecycle, document/upload/download, and condition contracts
+- [x] Invite-bound entitlement: each invite pre-authorizes exactly one Encompass login
+  (`*AuthorizedUser` or `InviteBindings` JSON), and a mismatched login is rejected before the
+  provisioning claim and before any token is minted. Unbound invites fail closed.
 - [x] Per-key bound Encompass user: enrollment requires `encompassUserId`, verifies it
   with `GET /encompass/v1/company/users/me` through an impersonation token, and stores
   the verified binding. Shared `PERSONA_*` tokens no longer grant loan access.

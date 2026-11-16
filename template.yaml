@@ -34,21 +34,22 @@ Parameters:
     NoEcho: true
     MinLength: 24
     Description: Invite code for AMC/appraisal partners (role=appraisal).
-  TitleServiceUserId:
+  TitleAuthorizedUser:
     Type: String
-    Default: api_title_template
-    MinLength: 1
-    Description: Encompass service account impersonated by title invite links.
-  BrokerServiceUserId:
+    Default: ""
+    Description: Encompass login pre-authorized for the title invite code. Empty rejects every title enrollment.
+  BrokerAuthorizedUser:
     Type: String
-    Default: api_broker_template
-    MinLength: 1
-    Description: Encompass service account impersonated by broker invite links.
-  AppraisalServiceUserId:
+    Default: ""
+    Description: Encompass login pre-authorized for the broker invite code. Empty rejects every broker enrollment.
+  AppraisalAuthorizedUser:
     Type: String
-    Default: api_appraisal_template
-    MinLength: 1
-    Description: Encompass service account impersonated by appraisal invite links.
+    Default: ""
+    Description: Encompass login pre-authorized for the appraisal invite code. Empty rejects every appraisal enrollment.
+  InviteBindings:
+    Type: String
+    Default: ""
+    Description: Optional JSON array of {code,role,encompassUserId,company} entries, one pre-authorized login per invite code.
   OpsAlertEmail:
     Type: String
     Default: ""
@@ -341,9 +342,10 @@ Resources:
           INVITE_TITLE: !Ref TitleInviteCode
           INVITE_BROKER: !Ref BrokerInviteCode
           INVITE_APPRAISAL: !Ref AppraisalInviteCode
-          PERSONA_TITLE: !Ref TitleServiceUserId
-          PERSONA_BROKER: !Ref BrokerServiceUserId
-          PERSONA_APPRAISAL: !Ref AppraisalServiceUserId
+          AUTHORIZED_USER_TITLE: !Ref TitleAuthorizedUser
+          AUTHORIZED_USER_BROKER: !Ref BrokerAuthorizedUser
+          AUTHORIZED_USER_APPRAISAL: !Ref AppraisalAuthorizedUser
+          INVITE_BINDINGS: !Ref InviteBindings
           WRITE_FIELDS_TITLE: !Ref TitleWriteFields
           WRITE_FIELDS_BROKER: !Ref BrokerWriteFields
           WRITE_FIELDS_APPRAISAL: !Ref AppraisalWriteFields
@@ -503,12 +505,50 @@ Resources:
          target[id] = definition;
          }
          }
-         function roleFor(env, role) {
+         // Multi-invite form: a JSON array of { code, role, encompassUserId, company }.
+         // Each entry pre-authorizes exactly one Encompass login for that invite.
+         function parseInviteBindings(env) {
+         const raw = env.INVITE_BINDINGS;
+         if (!raw) return [];
+         let parsed;
+         try {
+         parsed = JSON.parse(raw);
+         } catch {
+         return [];
+         }
+         if (!Array.isArray(parsed)) return [];
+         return parsed.filter(
+         (item) =>
+         item &&
+         typeof item.code === "string" &&
+         item.code.length >= 16 &&
+         ROLE_CONFIG[item.role] &&
+         typeof item.encompassUserId === "string" &&
+         /^[A-Za-z0-9._@-]+$/.test(item.encompassUserId),
+         );
+         }
+         // Resolves an invite to the identity it authorizes. The request never names the
+         // acting user: entitlement is decided here, and an invite with no pre-authorized
+         // login fails closed instead of falling back to whatever the actor can reach.
+         function resolveInvite(env, role, code) {
+         if (!code) return null;
+         for (const binding of parseInviteBindings(env)) {
+         if (binding.role !== role && role) continue;
+         if (!safeEqual(code, binding.code)) continue;
+         return {
+         role: binding.role,
+         label: ROLE_CONFIG[binding.role].label,
+         code: binding.code,
+         encompassUserId: binding.encompassUserId.trim(),
+         company: typeof binding.company === "string" ? binding.company : null,
+         };
+         }
          const config = ROLE_CONFIG[role];
          if (!config) return null;
-         const code = env[config.codeEnv];
-         const persona = env[config.personaEnv];
-         return code ? { role, label: config.label, code, persona } : null;
+         const legacyCode = env[config.codeEnv];
+         const authorizedUser = String(env[`AUTHORIZED_USER_${String(role).toUpperCase()}`] || "").trim();
+         if (!legacyCode || !authorizedUser || !safeEqual(code, legacyCode)) return null;
+         return { role, label: config.label, code: legacyCode, encompassUserId: authorizedUser, company: null };
          }
          function pickQuery(params, allowed) {
          const picked = {};
@@ -1404,22 +1444,31 @@ Resources:
          } catch {
          return error(400, "Invalid JSON body");
          }
-         const role = String((payload && payload.role) || "").trim().toLowerCase();
+         const requestedRole = String((payload && payload.role) || "").trim().toLowerCase();
          const code = String((payload && payload.code) || "");
-         const config = roleFor(env, role);
-         if (!config || !safeEqual(code, config.code)) {
-         log("WARN", "PORTAL_INVITE_REJECTED", { requestId, role });
-         return error(403, "Invalid or expired invite link");
+         const invite = resolveInvite(env, requestedRole, code);
+         if (!invite) {
+         log("WARN", "PORTAL_INVITE_REJECTED", { requestId, role: requestedRole });
+         return error(403, "Invalid, expired, or unbound invite link");
          }
+         if (requestedRole && invite.role !== requestedRole) {
+         log("WARN", "PORTAL_INVITE_ROLE_MISMATCH", { requestId, role: requestedRole, inviteRole: invite.role });
+         return error(403, "This invite is not valid for that role");
+         }
+         // Entitlement check runs before the provisioning claim and before any token
+         // is minted: the invite decides the acting login, not the caller.
+         const requestedUserId = String(payload.encompassUserId || "").trim();
+         if (requestedUserId && requestedUserId.toLowerCase() !== invite.encompassUserId.toLowerCase()) {
+         log("WARN", "PORTAL_INVITE_USER_MISMATCH", { requestId, role: invite.role });
+         return error(403, "This invite is not authorized for that Encompass user");
+         }
+         const encompassUserId = invite.encompassUserId;
+         const role = invite.role;
          const tenantName = String(payload.tenantName || "").trim();
          const email = String(payload.email || "").trim();
          if (!tenantName || tenantName.length > 100) return error(400, "tenantName is required (max 100 chars)");
          if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
          return error(400, "A valid email is required");
-         }
-         const encompassUserId = String(payload.encompassUserId || "").trim();
-         if (!encompassUserId || encompassUserId.length > 100 || !/^[A-Za-z0-9._@-]+$/.test(encompassUserId)) {
-         return error(400, "encompassUserId is required: the Encompass login this key acts as");
          }
          const provisioningKey = provisioningKeyFor(role, tenantName, email, encompassUserId);
          const createdAt = new Date(now()).toISOString();
@@ -1682,12 +1731,12 @@ Resources:
          const role = String(event.queryStringParameters?.role || "").trim().toLowerCase();
          const code = String(event.queryStringParameters?.code || "");
          if (!role && !code) return html(200, renderPortal());
-         const config = roleFor(env, role);
-         if (!config || !safeEqual(code, config.code)) {
+         const invite = resolveInvite(env, role, code);
+         if (!invite) {
          log("WARN", "PORTAL_INVITE_REJECTED", { requestId, role: role || "unknown" });
-         return html(403, renderPortal({ error: "This invite link is invalid or has expired." }));
+         return html(403, renderPortal({ error: "This invite link is invalid, expired, or not bound to an authorized user." }));
          }
-         return html(200, renderPortal({ role: config }));
+         return html(200, renderPortal({ role: invite }));
          }
          if (path === "/v1/fields") {
          if (method === "GET") return await fieldDefinitions(event, apiKeyId);

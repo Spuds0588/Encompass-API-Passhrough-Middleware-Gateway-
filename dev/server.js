@@ -26,11 +26,11 @@ async function createDevGateway({ port = 0, fakeEncompass = null } = {}) {
     env: {
       ENCOMPASS_BASE_URL: encompass.url,
       INVITE_TITLE: INVITES.title.code,
-      PERSONA_TITLE: INVITES.title.persona,
+      AUTHORIZED_USER_TITLE: "broker-user-1",
       INVITE_BROKER: INVITES.broker.code,
-      PERSONA_BROKER: INVITES.broker.persona,
+      AUTHORIZED_USER_BROKER: "broker-user-1",
       INVITE_APPRAISAL: INVITES.appraisal.code,
-      PERSONA_APPRAISAL: INVITES.appraisal.persona,
+      AUTHORIZED_USER_APPRAISAL: "broker-user-1",
       UPSTREAM_TIMEOUT_MS: "4000",
     },
   });

@@ -853,3 +853,30 @@ implemented: it needs a live tenant to confirm which field identifies the owning
 organization, and guessing an Encompass field code would violate this repo's no-invented-
 field rule. Vendor enforcement is the control today. `PERSONA_*` remains only because the
 template and deploy script still publish it; it grants nothing.
+
+## 2026-11-16 — Enrollment now requires lender entitlement, not just a reachable login
+
+**The hole.** The previous change proved the requested login was real and impersonable, but
+not that the caller was entitled to it. Anyone holding an invite link could type any login
+the actor could impersonate — including a lender administrator — and receive a key acting as
+that user. Verification proved existence; nothing proved authorization.
+
+**Fix.** Every invite is now bound to exactly one Encompass login, configured as
+`TitleAuthorizedUser` / `BrokerAuthorizedUser` / `AppraisalAuthorizedUser`, or as an
+`INVITE_BINDINGS` JSON array of `{code, role, encompassUserId, company}` for one invite per
+brokerage. Entitlement is evaluated in `resolveInvite` and enforced before the provisioning
+claim and before any token mint, so a mismatched login returns `403` with no key, no tenant
+row, and zero credential exchanges. Omitting the login is allowed because the invite already
+names it; an invite with no bound login fails closed instead of falling back to the actor's
+reach. The identity check through `users/me` still runs afterwards, so existence and
+entitlement are both proven.
+
+**Cleanup.** `roleFor` is gone, `PERSONA_*` is no longer published by the template, and the
+three `*ServiceUserId` parameters became `*AuthorizedUser` with an empty default, which makes
+a deployment that forgets to set them reject enrollments instead of silently authorizing a
+template account.
+
+**Verification.** `npm run verify` → **98 tests, 98 pass, 0 fail** (95 prior, 3 new): a
+foreign login is refused with no token minted and no stored key, an omitted login resolves to
+the invite's login, an unbound invite fails closed, and a JSON binding authorizes only the
+login it names. Template regenerated at 108,533 bytes with a refreshed digest pin.

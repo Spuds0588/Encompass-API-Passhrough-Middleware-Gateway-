@@ -158,9 +158,14 @@ npm run dev       # local gateway at :3000 with fake Encompass
   proves it: it mints an impersonation token for that login and requires
   `GET /encompass/v1/company/users/me` to return the same identity. Invite codes
   are bearer secrets and are never logged.
-- Every vendor call impersonates the key's bound user. `PERSONA_*` and any shared
-  service account must never be used to mint a loan-scoped token; they exist for
-  the portal label only.
+- Every vendor call impersonates the key's bound user. A shared service account
+  must never be used to mint a loan-scoped token.
+- Entitlement comes from the invite, never from the request. Each invite is bound
+  to exactly one Encompass login (`*AuthorizedUser` or an `InviteBindings` entry),
+  and a request naming a different login is rejected before the provisioning claim
+  and before any token is minted. An invite with no bound login fails closed.
+- Verifying a login exists is not the same as authorizing it. Both checks run, and
+  the entitlement check always runs first.
 - A failed binding never leaves a usable key or tenant row behind: verification
   runs before `createApiKey`, and the provisioning claim is released on failure.
 - API Gateway API keys are required on `/{proxy+}`; the portal and `/health` are

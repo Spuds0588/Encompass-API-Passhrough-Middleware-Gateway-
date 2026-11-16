@@ -229,14 +229,22 @@ but does not orchestrate chunks. Treat `authorizationHeader` as a secret.
 | `broker` | `BrokerInviteCode` | An Encompass user the broker names at signup |
 | `appraisal` | `AppraisalInviteCode` | An Encompass user the AMC names at signup |
 
-The invite code chooses the role. The vendor supplies `encompassUserId`, an
-Encompass login. The gateway mints an impersonation token for that login and
-calls `GET /encompass/v1/company/users/me`; if the identity that comes back does
-not match, no key is issued and no tenant row is written. `PERSONA_*` is kept
-for the portal's role label only and no longer grants any access.
+**The invite decides the login, not the caller.** Every invite is bound to one
+pre-authorized Encompass login, either through `TitleAuthorizedUser` /
+`BrokerAuthorizedUser` / `AppraisalAuthorizedUser` or, for many partners, through
+`InviteBindings` (a JSON array of `{code, role, encompassUserId, company}`). The
+vendor may type that login or omit it; anything else is refused before the
+provisioning claim and before any token is minted, so no key can be created.
+
+After the entitlement check the gateway still proves the login is real: it mints
+an impersonation token and requires `GET /encompass/v1/company/users/me` to return
+the same identity. Verification proves existence, entitlement proves it was
+issued to this partner — both are required. An invite with no bound login fails
+closed rather than falling back to whatever the actor account can reach.
 
 **Per brokerage:** create one Encompass user inside that brokerage's organization
-with the least-privilege partner persona and bind the key to it. Users can be
+with the least-privilege partner persona, then give that brokerage an invite bound
+to that login (a distinct `InviteBindings` entry per company). Users can be
 created in the UI or with `POST /encompass/v3/users?orgId=...` (Encompass 24.2+,
 administrator or Organizations/User persona, own or child organizations only, no
 password required when `apiUser` or `isSsoOnly` is set). Binding a user that

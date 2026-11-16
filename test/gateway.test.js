@@ -71,11 +71,11 @@ beforeEach(async () => {
     env: {
       ENCOMPASS_BASE_URL: fake.url,
       INVITE_TITLE: INVITES.title,
-      PERSONA_TITLE: "api_title_template",
+      AUTHORIZED_USER_TITLE: "broker-user-1",
       INVITE_BROKER: INVITES.broker,
-      PERSONA_BROKER: "api_broker_template",
+      AUTHORIZED_USER_BROKER: "broker-user-1",
       INVITE_APPRAISAL: INVITES.appraisal,
-      PERSONA_APPRAISAL: "api_appraisal_template",
+      AUTHORIZED_USER_APPRAISAL: "broker-user-1",
       UPSTREAM_TIMEOUT_MS: "3000",
     },
   });
@@ -425,7 +425,7 @@ test("portal renders a persona-locked form for a valid invite", async () => {
 test("portal rejects invalid and role-mismatched invites", async () => {
   const badCode = await handler(httpEvent({ path: "/portal", query: { role: "title", code: "nope" } }));
   assert.equal(badCode.statusCode, 403);
-  assert.match(badCode.body, /invalid or has expired/i);
+  assert.match(badCode.body, /invalid, expired, or not bound/i);
 
   const mismatch = await provision({ role: "broker", code: INVITES.title });
   assert.equal(mismatch.statusCode, 403);

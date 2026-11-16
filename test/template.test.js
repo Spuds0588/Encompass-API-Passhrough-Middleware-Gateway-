@@ -67,7 +67,8 @@ test("secrets have no default values and invite codes are per role", () => {
 
 test("portal provisioning is role-scoped and has no admin token", () => {
   assert.match(template, /INVITE_TITLE/);
-  assert.match(template, /PERSONA_BROKER/);
+  assert.match(template, /AUTHORIZED_USER_BROKER/);
+  assert.match(template, /INVITE_BINDINGS/);
   assert.match(template, /PORTAL_INVITE_REJECTED/);
   assert.ok(!template.includes("ADMIN_TOKEN"));
   assert.ok(!template.includes("AdminPortalToken"));

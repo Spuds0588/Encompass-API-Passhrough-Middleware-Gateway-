@@ -31,7 +31,7 @@ NC='\033[0m'
 
 STACK_NAME="${STACK_NAME:-Encompass-API-Gateway}"
 TEMPLATE_REF="${TEMPLATE_REF:-v0.2.0}"
-TEMPLATE_SHA256="${TEMPLATE_SHA256:-9f0372d7a7571292a24957ed93d706e9c1907db775d150bc95a12b4f8a27597a}"
+TEMPLATE_SHA256="${TEMPLATE_SHA256:-070a7e50c0b062e500af61f9629d60da1a0d66232b1bd8a2370f7cf373454a43}"
 TEMPLATE_URL="${TEMPLATE_URL:-https://raw.githubusercontent.com/Spuds0588/Encompass-API-Passhrough-Middleware-Gateway-/${TEMPLATE_REF}/template.yaml}"
 
 say() { printf '%b\n' "$1"; }
@@ -151,9 +151,10 @@ if ! (
     {ParameterKey:"TitleInviteCode",ParameterValue:env.TITLE_INVITE_CODE},
     {ParameterKey:"BrokerInviteCode",ParameterValue:env.BROKER_INVITE_CODE},
     {ParameterKey:"AppraisalInviteCode",ParameterValue:env.APPRAISAL_INVITE_CODE},
-    {ParameterKey:"TitleServiceUserId",ParameterValue:env.TITLE_PERSONA},
-    {ParameterKey:"BrokerServiceUserId",ParameterValue:env.BROKER_PERSONA},
-    {ParameterKey:"AppraisalServiceUserId",ParameterValue:env.APPRAISAL_PERSONA}
+    {ParameterKey:"TitleAuthorizedUser",ParameterValue:env.TITLE_AUTHORIZED_USER || env.TITLE_PERSONA || ""},
+    {ParameterKey:"BrokerAuthorizedUser",ParameterValue:env.BROKER_AUTHORIZED_USER || env.BROKER_PERSONA || ""},
+    {ParameterKey:"AppraisalAuthorizedUser",ParameterValue:env.APPRAISAL_AUTHORIZED_USER || env.APPRAISAL_PERSONA || ""},
+    {ParameterKey:"InviteBindings",ParameterValue:env.INVITE_BINDINGS || ""}
   ]' > "$TMP_PARAMS"
 ); then
   say "${RED}[ERROR] Could not prepare parameter overrides.${NC}"

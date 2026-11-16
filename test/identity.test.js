@@ -57,7 +57,9 @@ beforeEach(async () => {
     env: {
       ENCOMPASS_BASE_URL: fake.url,
       INVITE_TITLE: INVITES.title,
+      AUTHORIZED_USER_TITLE: "title-user-1",
       INVITE_BROKER: INVITES.broker,
+      AUTHORIZED_USER_BROKER: "broker-user-1",
       UPSTREAM_TIMEOUT_MS: "3000",
     },
   });
@@ -67,10 +69,82 @@ afterEach(async () => {
   await fake.close();
 });
 
-test("enrollment requires the Encompass login the key acts as", async () => {
+test("enrollment refuses a login the invite was not issued for, before minting a token", async () => {
+  const response = await provision({ encompassUserId: "title-user-1" });
+  assert.equal(response.statusCode, 403);
+  assert.match(parse(response).error, /not authorized/i);
+
+  // Entitlement is decided before any credential is minted, and no key is stored.
+  assert.equal(fake.state.actorExchanges, 0);
+  assert.equal(fake.state.tokenExchanges, 0);
+  assert.equal(store.apiKeys.size, 0);
+});
+
+test("enrollment derives the acting login from the invite when the form omits it", async () => {
   const response = await provision({ encompassUserId: "" });
-  assert.equal(response.statusCode, 400);
-  assert.match(parse(response).error, /encompassUserId/);
+  assert.equal(response.statusCode, 200);
+  assert.equal(parse(response).encompassUserId, "broker-user-1");
+});
+
+test("an invite with no pre-authorized login fails closed", async () => {
+  const { createHandler } = require("../src/gateway");
+  const unbound = createHandler({
+    store,
+    env: {
+      ENCOMPASS_BASE_URL: fake.url,
+      INVITE_BROKER: INVITES.broker,
+      UPSTREAM_TIMEOUT_MS: "3000",
+    },
+  });
+  const response = await unbound(
+    httpEvent({
+      method: "POST",
+      path: "/portal",
+      body: {
+        tenantName: "Acme Broker",
+        email: "dev@acme.test",
+        role: "broker",
+        code: INVITES.broker,
+        encompassUserId: "broker-user-1",
+      },
+    }),
+  );
+  assert.equal(response.statusCode, 403);
+  assert.equal(store.apiKeys.size, 0);
+});
+
+test("a JSON invite binding authorizes exactly the login it names", async () => {
+  const { createHandler } = require("../src/gateway");
+  const code = "bound-invite-code-0123456789";
+  const bound = createHandler({
+    store,
+    env: {
+      ENCOMPASS_BASE_URL: fake.url,
+      UPSTREAM_TIMEOUT_MS: "3000",
+      INVITE_BINDINGS: JSON.stringify([
+        { code, role: "title", encompassUserId: "title-user-1", company: "Acme Title" },
+      ]),
+    },
+  });
+  const post = (encompassUserId) =>
+    bound(
+      httpEvent({
+        method: "POST",
+        path: "/portal",
+        body: {
+          tenantName: "Acme Title",
+          email: "dev@acme.test",
+          role: "title",
+          code,
+          encompassUserId,
+        },
+      }),
+    );
+
+  assert.equal((await post("broker-user-1")).statusCode, 403);
+  const allowed = await post("title-user-1");
+  assert.equal(allowed.statusCode, 200);
+  assert.equal(parse(allowed).encompassUserId, "title-user-1");
 });
 
 test("enrollment refuses a user Encompass cannot mint a token for", async () => {

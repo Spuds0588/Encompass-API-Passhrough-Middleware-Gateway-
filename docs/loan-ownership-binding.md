@@ -25,8 +25,13 @@ Two things follow, and both matter:
 
 ## How enrollment works
 
-1. The vendor opens the role invite link and submits company name, developer email, and
-   the Encompass login the key should act as (`encompassUserId`).
+0. The lender binds the invite to one Encompass login when it is issued — via
+   `TitleAuthorizedUser` / `BrokerAuthorizedUser` / `AppraisalAuthorizedUser`, or an
+   `InviteBindings` entry `{code, role, encompassUserId, company}` when several brokerages
+   need their own codes. This is the entitlement step, and it is the lender's decision.
+1. The vendor opens the invite link and submits company name, developer email, and either
+   that login or nothing at all. A different login is refused here, before the provisioning
+   claim and before any token is minted. An unbound invite fails closed.
 2. The gateway authenticates the **actor** account (password grant, credentials in the
    Secrets Manager payload) and exchanges that token for an impersonation token for the
    named login.
@@ -106,7 +111,11 @@ Tenants already provisioned keep their existing row until re-provisioned, and be
 
 `npm run verify` covers, in `test/identity.test.js`:
 
-- enrollment without a login is rejected (`400`)
+- a login the invite was not issued for is refused (`403`) with zero actor exchanges, zero
+  token exchanges, and no stored key
+- omitting the login resolves to the invite's login
+- an invite with no bound login fails closed
+- a JSON invite binding authorizes only the login it names
 - enrollment for a login Encompass cannot mint a token for is rejected (`403`)
 - the verified binding is what gets stored, not the persona
 - the exchange uses an actor token (`state.actorExchanges === 1`)
