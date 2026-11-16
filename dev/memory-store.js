@@ -21,7 +21,7 @@ function createMemoryStore() {
     apiKeys,
     provisioning,
     async getSecret() {
-      return { clientId: "test-client", clientSecret: "test-secret" };
+      return { clientId: "test-client", clientSecret: "test-secret", actorUsername: "gateway-actor", actorPassword: "actor-pass" };
     },
     async getTenant(apiKeyId) {
       return tenants.get(apiKeyId) || null;

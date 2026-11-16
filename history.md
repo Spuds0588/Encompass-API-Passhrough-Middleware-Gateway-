@@ -821,3 +821,35 @@ BLOCKED by missing credentials and are not claimed.
 - No runtime code changed. `todo.md` links the notes from the top-priority section so later build work starts
   from research rather than from scratch.
 - Daily check: zero open issues, zero open PRs, and zero closed issues on this repo.
+
+## 2026-11-16 — Per-key bound Encompass user replaces shared persona impersonation
+
+**Problem.** The key resolved to a tenant whose `encompassUserId` was a shared template
+persona from `PERSONA_*`. Every broker key acted as one account, so any caller holding a
+loan GUID and a valid key read another company's loan. Enrollment wrote a company name
+that no authorization path ever read.
+
+**Change.** Enrollment now requires the Encompass login the key should act as
+(`encompassUserId`). The gateway mints an impersonation token for it, calls
+`GET /encompass/v1/company/users/me`, and refuses to issue a key when the returned
+identity differs; on refusal the provisioning claim is released and no tenant row is
+written. The tenant row records the login plus a binding snapshot (personas, subordinate
+and peer loan access, verification time). Token exchange was corrected to the documented
+flow: a password-grant actor token, then `actor_token` + `actor_token_type` +
+`subject_user_id` + `scope=lp`. The previous body sent `subject_token_type` with no actor
+and only worked against the local fake.
+
+**Enforcement.** Because the token belongs to the bound user, Encompass decides loan
+visibility. The fake models the same rule on every loan-scoped route, so a foreign loan id
+now returns `404` in tests, not `200`. The 30-second read cache moved from
+`persona|loanId|fields` to `apiKeyId|loanId|fields`, closing a cross-tenant cache leak.
+
+**Verification.** `npm run verify` → **95 tests, 95 pass, 0 fail** (89 prior, 6 new in
+`test/identity.test.js`). Template regenerated at 105,933 bytes with a refreshed
+`deploy.sh` digest pin.
+
+**Left open, deliberately.** A gateway-side ownership check on loan fields is *not*
+implemented: it needs a live tenant to confirm which field identifies the owning
+organization, and guessing an Encompass field code would violate this repo's no-invented-
+field rule. Vendor enforcement is the control today. `PERSONA_*` remains only because the
+template and deploy script still publish it; it grants nothing.

@@ -153,9 +153,16 @@ npm run dev       # local gateway at :3000 with fake Encompass
 
 - Provisioning requires a role invite code (`INVITE_TITLE`, `INVITE_BROKER`,
   `INVITE_APPRAISAL`) and fails closed if the role or code is unset; comparisons
-  are timing-safe. The persona is chosen server-side from `PERSONA_*`; a
-  client-supplied Encompass user ID is ignored. Invite codes are bearer secrets
-  and are never logged.
+  are timing-safe. The role comes from the invite, but the acting identity comes
+  from the request as `encompassUserId` and is only accepted after the gateway
+  proves it: it mints an impersonation token for that login and requires
+  `GET /encompass/v1/company/users/me` to return the same identity. Invite codes
+  are bearer secrets and are never logged.
+- Every vendor call impersonates the key's bound user. `PERSONA_*` and any shared
+  service account must never be used to mint a loan-scoped token; they exist for
+  the portal label only.
+- A failed binding never leaves a usable key or tenant row behind: verification
+  runs before `createApiKey`, and the provisioning claim is released on failure.
 - API Gateway API keys are required on `/{proxy+}`; the portal and `/health` are
   the only unauthenticated routes.
 - Portal provisioning is idempotent per normalized role + company + email.

@@ -67,13 +67,17 @@ curl -s "$GATEWAY_URL/v1/jobs/$JOB_ID" -H "x-api-key: $KEY"
   to `{ id, fields, _cached }`, with a 30-second per-container projection cache.
 - **Async writes** — `PATCH /v1/loans/{id}` validates and enqueues to SQS FIFO
   (grouped by loan), returns `202` + job ID, and retries Encompass file locks.
-- **Persona impersonation** — vendors get a scoped API key mapped to an Encompass
-  service account; OAuth token exchange results are cached per persona.
+- **Bound-user impersonation** — each API key is bound to one Encompass user the
+  vendor names at signup. The gateway authenticates an actor account, exchanges
+  that token for an impersonation token for the bound user, and calls Encompass as
+  that user, so Encompass enforces that user's loan visibility. Tokens are cached
+  per bound user, never per shared persona.
 - **Role-scoped self-serve onboarding** — the lender shares a title, broker, or
-  appraisal invite link. The vendor enters a company name and developer email;
-  the gateway locks the key to that role's Encompass persona server-side. No
-  admin token and no Encompass admin in the onboarding loop. Repeated
-  submissions return the same key instead of minting duplicates.
+  appraisal invite link. The vendor enters a company name, developer email, and
+  the Encompass login the key should act as; the gateway verifies that identity
+  against Encompass before issuing a key. No admin token and no Encompass admin
+  in the onboarding loop. Repeated submissions return the same key instead of
+  minting duplicates.
 - **Field discovery** — the portal publishes a common-field cheat sheet, and
   `GET /v1/fields?ids=11,646,CX.TITLE.STATUS` returns live definitions from
   Encompass's native standard and custom field schema APIs. `readOnly` and
@@ -219,19 +223,35 @@ but does not orchestrate chunks. Treat `authorizationHeader` as a secret.
 
 ### Roles and personas
 
-| Role | Persona parameter | Default service account | Invite parameter |
-| --- | --- | --- | --- |
-| `title` | `TitleServiceUserId` | `api_title_template` | `TitleInviteCode` |
-| `broker` | `BrokerServiceUserId` | `api_broker_template` | `BrokerInviteCode` |
-| `appraisal` | `AppraisalServiceUserId` | `api_appraisal_template` | `AppraisalInviteCode` |
+| Role | Invite parameter | What the key acts as |
+| --- | --- | --- |
+| `title` | `TitleInviteCode` | An Encompass user the title partner names at signup |
+| `broker` | `BrokerInviteCode` | An Encompass user the broker names at signup |
+| `appraisal` | `AppraisalInviteCode` | An Encompass user the AMC names at signup |
 
-The persona comes from the role parameter, never from the request body, so a
-vendor holding one invite link cannot mint a key for another role.
+The invite code chooses the role. The vendor supplies `encompassUserId`, an
+Encompass login. The gateway mints an impersonation token for that login and
+calls `GET /encompass/v1/company/users/me`; if the identity that comes back does
+not match, no key is issued and no tenant row is written. `PERSONA_*` is kept
+for the portal's role label only and no longer grants any access.
+
+**Per brokerage:** create one Encompass user inside that brokerage's organization
+with the least-privilege partner persona and bind the key to it. Users can be
+created in the UI or with `POST /encompass/v3/users?orgId=...` (Encompass 24.2+,
+administrator or Organizations/User persona, own or child organizations only, no
+password required when `apiUser` or `isSsoOnly` is set). Binding a user that
+already exists is preferable: it needs no creation step and immediately covers
+every loan that user can already see, so a brokerage with 20 files on day one
+needs no backfill.
+
+Encompass remains the authorization control: the token belongs to the bound user,
+so a loan id from another company returns `404` instead of another company's data.
+See `docs/loan-ownership-binding.md` for the full design.
 
 ## Broker loan lifecycle
 
 The lifecycle routes are synchronous native passthroughs. They resolve the tenant
-from the API key, exchange for the tenant's persona token, and forward the request
+from the API key, exchange for an impersonation token for the tenant's bound user, and forward the request
 directly to Encompass. The gateway does not persist loan, condition, or document
 bodies and does not maintain a loan mirror.
 
@@ -464,7 +484,8 @@ No loan database or mirror is maintained. The actual data paths are:
 - **Lambda memory:** requested read projections for up to 30 seconds.
 - **SQS:** write payloads in an encrypted FIFO queue for up to 1 day; DLQ up to
   4 days. SSE-SQS is enabled.
-- **DynamoDB:** tenant name, email, role, persona, and API key ID; OAuth tokens
+- **DynamoDB:** tenant name, email, role, bound Encompass user, a verified binding
+  snapshot (personas, subordinate and peer loan access), and API key ID; OAuth tokens
   with a TTL at token expiry (DynamoDB TTL deletion is eventual); job metadata for
   30 days; and provisioning idempotency metadata (a hash, status, and API key ID,
   never plaintext keys) with a 15-minute pending lock and a 24-hour completion

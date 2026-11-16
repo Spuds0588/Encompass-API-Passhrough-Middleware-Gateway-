@@ -96,9 +96,9 @@ function safeEqual(a, b) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function provisioningKeyFor(role, tenantName, email) {
+function provisioningKeyFor(role, tenantName, email, encompassUserId = "") {
   return createHash("sha256")
-    .update(`${role}|${tenantName.trim().toLowerCase()}|${email.trim().toLowerCase()}`)
+    .update(`${role}|${tenantName.trim().toLowerCase()}|${email.trim().toLowerCase()}|${encompassUserId.trim().toLowerCase()}`)
     .digest("hex");
 }
 
@@ -178,7 +178,7 @@ function roleFor(env, role) {
   if (!config) return null;
   const code = env[config.codeEnv];
   const persona = env[config.personaEnv];
-  return code && persona ? { role, label: config.label, code, persona } : null;
+  return code ? { role, label: config.label, code, persona } : null;
 }
 
 function pickQuery(params, allowed) {
@@ -313,6 +313,65 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     return credentials;
   }
 
+  let actorTokenCache = null;
+
+  // The actor is the privileged Encompass user the gateway authenticates as
+  // before impersonating a tenant's own bound user. It never touches loan data.
+  async function getActorToken(secret) {
+    const nowSeconds = Math.floor(now() / 1000);
+    if (actorTokenCache && actorTokenCache.expiresAt > nowSeconds + TOKEN_SKEW_SECONDS) {
+      return actorTokenCache.accessToken;
+    }
+    if (!secret.actorUsername || !secret.actorPassword) {
+      throw new Error("Actor credentials are not configured");
+    }
+    const body = new URLSearchParams({
+      grant_type: "password",
+      username: secret.actorUsername,
+      password: secret.actorPassword,
+      client_id: secret.clientId,
+      client_secret: secret.clientSecret,
+      scope: "lp",
+    });
+    const response = await fetchImpl(`${baseUrl()}/oauth2/v1/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: body.toString(),
+      signal: AbortSignal.timeout(timeoutMs()),
+    });
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => "")).slice(0, 300);
+      log("ERROR", "ACTOR_TOKEN_FAILED", { status: response.status, detail });
+      throw new Error(`Encompass actor auth failure: ${response.status}`);
+    }
+    const token = await response.json();
+    const expiresAt = nowSeconds + (Number(token.expires_in) || 1800);
+    actorTokenCache = { accessToken: token.access_token, expiresAt };
+    return token.access_token;
+  }
+
+  // Confirms the identity Encompass minted a token for. Enrollment must never
+  // trust a login typed into the form; it trusts this profile.
+  async function verifySubject(encompassUserId) {
+    let token;
+    try {
+      token = await getScopedToken(encompassUserId);
+    } catch (err) {
+      log("WARN", "SUBJECT_TOKEN_UNAVAILABLE", { encompassUserId, message: err.message });
+      return null;
+    }
+    const response = await fetchImpl(`${baseUrl()}/encompass/v1/company/users/me`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs()),
+    });
+    if (!response.ok) {
+      log("WARN", "SUBJECT_VERIFICATION_FAILED", { status: response.status });
+      return null;
+    }
+    return response.json();
+  }
+
   async function getScopedToken(encompassUserId) {
     const nowSeconds = Math.floor(now() / 1000);
     const cached = await store.getToken(encompassUserId);
@@ -323,12 +382,15 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
 
     log("INFO", "TOKEN_EXCHANGE_REQUEST", { encompassUserId });
     const secret = await credentialsForExchange();
+    const actorToken = await getActorToken(secret);
     const body = new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
       client_id: secret.clientId,
       client_secret: secret.clientSecret,
-      subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      actor_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      actor_token: actorToken,
       subject_user_id: encompassUserId,
+      scope: "lp",
     });
 
     const response = await fetchImpl(`${baseUrl()}/oauth2/v1/token`, {
@@ -493,7 +555,7 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     const fields = parseFields(event.queryStringParameters?.fields);
     if (!fields) return error(400, "Invalid fields parameter");
 
-    const cacheKey = `${tenant.encompassUserId}|${loanId}|${fields.join(",")}`;
+    const cacheKey = `${apiKeyId}|${loanId}|${fields.join(",")}`;
     const cached = readCache.get(cacheKey);
     if (cached && cached.expiresAt > now()) {
       log("INFO", "READ_CACHE_HIT", { loanId, fields: fields.length });
@@ -1150,7 +1212,12 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       return error(400, "A valid email is required");
     }
 
-    const provisioningKey = provisioningKeyFor(role, tenantName, email);
+    const encompassUserId = String(payload.encompassUserId || "").trim();
+    if (!encompassUserId || encompassUserId.length > 100 || !/^[A-Za-z0-9._@-]+$/.test(encompassUserId)) {
+      return error(400, "encompassUserId is required: the Encompass login this key acts as");
+    }
+
+    const provisioningKey = provisioningKeyFor(role, tenantName, email, encompassUserId);
     const createdAt = new Date(now()).toISOString();
     let claimed;
     try {
@@ -1167,9 +1234,29 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
     }
     if (!claimed) return reuseProvisioning(provisioningKey, requestId);
 
+    let profile;
+    try {
+      profile = await verifySubject(encompassUserId);
+    } catch (err) {
+      log("ERROR", "SUBJECT_VERIFICATION_UNAVAILABLE", { requestId, stage: "verify", message: err.message });
+      await releaseProvisioningClaim(provisioningKey);
+      return error(502, "Encompass identity verification unavailable");
+    }
+    if (!profile) {
+      log("WARN", "SUBJECT_NOT_VERIFIED", { requestId, encompassUserId });
+      await releaseProvisioningClaim(provisioningKey);
+      return error(403, "That Encompass user could not be verified for this instance");
+    }
+    const verifiedId = String(profile.id || profile.user_name || "").trim();
+    if (verifiedId.toLowerCase() !== encompassUserId.toLowerCase()) {
+      log("WARN", "SUBJECT_MISMATCH", { requestId, verifiedId, encompassUserId });
+      await releaseProvisioningClaim(provisioningKey);
+      return error(403, "The verified Encompass identity does not match the requested user");
+    }
+
     let key;
     try {
-      key = await store.createApiKey({ tenantName, encompassUserId: config.persona });
+      key = await store.createApiKey({ tenantName, encompassUserId });
     } catch (err) {
       log("ERROR", "TENANT_PROVISION_FAILED", { requestId, stage: "api_key", message: err.message });
       await releaseProvisioningClaim(provisioningKey);
@@ -1182,7 +1269,16 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       tenantName,
       email,
       role,
-      encompassUserId: config.persona,
+      encompassUserId,
+      binding: {
+        mode: "BOUND_SUBJECT",
+        verifiedAt: createdAt,
+        personas: Array.isArray(profile.personas) ? profile.personas : [],
+        loanAccess: {
+          subordinate: profile.subordinateLoanAccess || null,
+          peer: profile.peerLoanAccess || null,
+        },
+      },
       status: "ACTIVE",
       createdAt,
     };
@@ -1207,7 +1303,14 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       log("ERROR", "PROVISIONING_RECORD_UPDATE_FAILED", { requestId, apiKeyId: key.id, message: err.message });
     }
 
-    log("INFO", "TENANT_PROVISIONED", { requestId, tenantName, role, apiKeyId: key.id });
+    log("INFO", "TENANT_PROVISIONED", {
+      requestId,
+      tenantName,
+      role,
+      apiKeyId: key.id,
+      encompassUserId,
+      peerLoanAccess: tenant.binding.loanAccess.peer,
+    });
     return json(200, {
       message: "Tenant provisioned successfully",
       apiKey: key.value,
@@ -1215,7 +1318,8 @@ function createHandler({ store, fetchImpl = globalThis.fetch, env = process.env,
       tenantName,
       email,
       role,
-      encompassUserId: config.persona,
+      encompassUserId,
+      binding: tenant.binding,
       reused: false,
     });
   }
@@ -1563,13 +1667,15 @@ function renderPortal({ role, error } = {}) {
   ${role
     ? `<section class="invite">
         <span class="badge">${escapeHtml(role.label)}</span>
-        <p class="hint">Persona locked to <code>${escapeHtml(role.persona)}</code>. Requests made with your key inherit these permissions.</p>
+        <p class="hint">Your key acts as the Encompass user you name below. Encompass decides which loans that user can see, so a loan ID from another company returns <code>404</code>.</p>
       </section>
       <form id="form">
         <label for="tenantName">Company name</label>
         <input id="tenantName" type="text" maxlength="100" placeholder="e.g. First American Title" required>
         <label for="email">Developer email</label>
         <input id="email" type="email" maxlength="254" placeholder="dev@firstam.com" required>
+        <label for="encompassUserId">Encompass login to act as</label>
+        <input id="encompassUserId" type="text" maxlength="100" placeholder="jmillerlo" required>
         <button id="submit" type="submit">Generate API key</button>
       </form>`
     : `<div class="notice"><strong>Invite link required.</strong> Ask your lender for a role-scoped link such as <code>/portal?role=title&amp;code=...</code>. The link fixes your Encompass persona and permissions.</div>`}
@@ -1616,8 +1722,9 @@ function renderPortal({ role, error } = {}) {
       const params = new URLSearchParams(location.search);
       const tenantName = $('tenantName').value.trim();
       const email = $('email').value.trim();
-      if (!tenantName || !email) {
-        $('error').textContent = 'Company name and developer email are required.';
+      const encompassUserId = $('encompassUserId').value.trim();
+      if (!tenantName || !email || !encompassUserId) {
+        $('error').textContent = 'Company name, developer email, and Encompass login are required.';
         return show('error');
       }
       const button = $('submit');
@@ -1630,6 +1737,7 @@ function renderPortal({ role, error } = {}) {
           body: JSON.stringify({
             tenantName,
             email,
+            encompassUserId,
             role: params.get('role'),
             code: params.get('code'),
           }),

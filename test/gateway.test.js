@@ -51,6 +51,7 @@ const provision = (overrides = {}) =>
         email: "dev@acme.test",
         role: "title",
         code: INVITES.title,
+        encompassUserId: "broker-user-1",
         ...overrides,
       },
     }),
@@ -81,7 +82,7 @@ beforeEach(async () => {
   await store.putTenant({
     apiKeyId: "key-1",
     tenantName: "Acme Title",
-    encompassUserId: "persona-1",
+    encompassUserId: "broker-user-1",
     role: "title",
     email: "dev@acme.test",
     status: "ACTIVE",
@@ -143,7 +144,7 @@ test("scoped token is reused across loans for the same persona", async () => {
 
 test("expired cached token triggers a new token exchange", async () => {
   await handler(httpEvent({ path: "/v1/loans/loan-1" }));
-  await store.putToken({ encompassUserId: "persona-1", accessToken: "stale", expiresAt: 1 });
+  await store.putToken({ encompassUserId: "broker-user-1", accessToken: "stale", expiresAt: 1 });
   const response = await handler(httpEvent({ path: "/v1/loans/loan-2" }));
 
   assert.equal(response.statusCode, 200);
@@ -358,7 +359,7 @@ test("inactive tenants are denied across authenticated routes", async () => {
   await store.putTenant({
     apiKeyId: "key-1",
     tenantName: "Acme Title",
-    encompassUserId: "persona-1",
+    encompassUserId: "broker-user-1",
     role: "title",
     status: "SUSPENDED",
   });
@@ -393,7 +394,7 @@ test("PATCH caps fields at 100", async () => {
 
 test("job status is scoped to the requesting tenant", async () => {
   const { jobId } = parse(await enqueue());
-  await store.putTenant({ apiKeyId: "key-2", tenantName: "Other", encompassUserId: "persona-2", status: "ACTIVE" });
+  await store.putTenant({ apiKeyId: "key-2", tenantName: "Other", encompassUserId: "title-user-1", status: "ACTIVE" });
 
   const foreign = await handler(httpEvent({ path: `/v1/jobs/${jobId}`, apiKeyId: "key-2" }));
   assert.equal(foreign.statusCode, 404);
@@ -417,7 +418,7 @@ test("portal renders a persona-locked form for a valid invite", async () => {
   const response = await handler(httpEvent({ path: "/portal", query: { role: "title", code: INVITES.title } }));
   assert.equal(response.statusCode, 200);
   assert.match(response.body, /Title \/ Settlement/);
-  assert.match(response.body, /api_title_template/);
+  assert.match(response.body, /Encompass user/);
   assert.match(response.body, /id="email"/);
 });
 
@@ -436,7 +437,7 @@ test("portal provisions a persona-locked key via an invite", async () => {
 
   const body = parse(response);
   assert.equal(body.role, "title");
-  assert.equal(body.encompassUserId, "api_title_template");
+  assert.equal(body.encompassUserId, "broker-user-1");
   assert.equal(body.reused, false);
   assert.ok(body.apiKey);
 
@@ -446,7 +447,7 @@ test("portal provisions a persona-locked key via an invite", async () => {
   const tenant = await store.getTenant(apiKeyId);
   assert.equal(tenant.email, "dev@acme.test");
   assert.equal(tenant.role, "title");
-  assert.equal(tenant.encompassUserId, "api_title_template");
+  assert.equal(tenant.encompassUserId, "broker-user-1");
   assert.ok(tenant.provisioningKey);
 
   const read = await handler(httpEvent({ path: "/v1/loans/loan-1", apiKeyId }));

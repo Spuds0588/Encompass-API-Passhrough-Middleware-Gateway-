@@ -14,6 +14,18 @@ broker use case and outranks every P1/P2 and deferred item below.
 - [x] Enhanced-condition read/respond
 - [x] Full and chunked V3 loan registration, milestone submission, document creation, and enhanced/standard condition lifecycle
 - [ ] BLOCKED: live-tenant verification of the lifecycle, document/upload/download, and condition contracts
+- [x] Per-key bound Encompass user: enrollment requires `encompassUserId`, verifies it
+  with `GET /encompass/v1/company/users/me` through an impersonation token, and stores
+  the verified binding. Shared `PERSONA_*` tokens no longer grant loan access.
+- [x] Impersonation now uses the documented exchange: password-grant actor token, then
+  `actor_token` + `subject_user_id` + `scope=lp`. Encompass enforces the bound user's
+  loan visibility, so a foreign loan id returns `404`.
+- [x] Read cache is keyed per API key, so two keys can no longer share a cached projection.
+- [x] Six identity tests cover missing login, unverifiable login, recorded binding, actor
+  exchange, cross-user loan denial, and a leaked id across two companies.
+- [ ] BLOCKED: live-tenant confirmation that a per-brokerage user bound through
+  `POST /encompass/v3/users` (or an existing user) sees only that organization's loans,
+  and whether `apiUser = true` behaves per user or per partner client id.
 - [x] Parity research recorded in `docs/parity-implementation-notes.md` (2026-11-16): the route shapes behind document read/write, condition read/submit, and loan registration/submission, plus the open "submit loan file" contract question every repo shares
 
 ## Broker lifecycle extension (2026-11-07)

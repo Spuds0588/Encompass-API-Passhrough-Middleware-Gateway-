@@ -147,6 +147,9 @@ const readBody = (req) =>
 function startFakeEncompass({
   port = 0,
   loans = {},
+  users = null,
+  loanOwners = null,
+  actor = { username: "gateway-actor", password: "actor-pass" },
   lockAttempts = {},
   tokenTtlSeconds = 1800,
   documents = DEFAULT_DOCUMENTS,
@@ -185,6 +188,11 @@ function startFakeEncompass({
     downloadGets: 0,
     downloadedBytes: 0,
     tokens: new Set(),
+    tokenSubjects: new Map(),
+    actors: new Set(),
+    actorExchanges: 0,
+    users: new Map(),
+    loanOwners: new Map(),
     loans: new Map(Object.entries(loans).map(([id, loan]) => [id, { ...loan, id }])),
     lockRemaining: new Map(Object.entries(lockAttempts)),
     documents: new Map(),
@@ -228,12 +236,39 @@ function startFakeEncompass({
     }
   }
 
+  const seededUsers = users || {
+    "broker-user-1": {
+      id: "broker-user-1",
+      email: "broker@acme.test",
+      subordinateLoanAccess: "ReadOnly",
+      peerLoanAccess: "Disabled",
+      personas: [{ entityId: "9", entityType: "Persona", entityName: "TPO Broker" }],
+    },
+    "title-user-1": {
+      id: "title-user-1",
+      email: "title@acme.test",
+      subordinateLoanAccess: "ReadOnly",
+      peerLoanAccess: "Disabled",
+      personas: [{ entityId: "11", entityType: "Persona", entityName: "Title Partner" }],
+    },
+  };
+  for (const [userId, profile] of Object.entries(seededUsers)) {
+    state.users.set(userId, { ...profile, id: profile.id || userId });
+  }
+  const seededOwners = loanOwners
+    || Object.fromEntries([...state.loans.keys()].map((loanId) => [loanId, "broker-user-1"]));
+  for (const [loanId, subject] of Object.entries(seededOwners)) {
+    state.loanOwners.set(loanId, subject);
+  }
+
   const send = (res, status, body) => {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(body === undefined ? "" : JSON.stringify(body));
   };
 
-  const authorized = (req) => state.tokens.has(String(req.headers.authorization || "").replace(/^Bearer /, ""));
+  const bearerOf = (req) => String(req.headers.authorization || "").replace(/^Bearer /, "");
+  const subjectFor = (req) => state.tokenSubjects.get(bearerOf(req)) || null;
+  const authorized = (req) => state.tokens.has(bearerOf(req));
 
   const findAttachment = (loanId, attachmentId) =>
     (state.documents.get(loanId) || [])
@@ -256,10 +291,27 @@ function startFakeEncompass({
       if (params.get("client_id") !== "test-client" || params.get("client_secret") !== "test-secret") {
         return send(res, 401, { error: "invalid_client" });
       }
-      if (!params.get("subject_user_id")) return send(res, 400, { error: "invalid_request" });
+
+      if (params.get("grant_type") === "password") {
+        if (params.get("username") !== actor.username || params.get("password") !== actor.password) {
+          return send(res, 401, { error: "invalid_grant" });
+        }
+        state.actorExchanges += 1;
+        const actorToken = `actor-${state.actorExchanges}`;
+        state.actors.add(actorToken);
+        return send(res, 200, { access_token: actorToken, token_type: "Bearer", expires_in: tokenTtlSeconds });
+      }
+
+      const subject = params.get("subject_user_id");
+      if (!subject) return send(res, 400, { error: "invalid_request" });
+      if (!state.actors.has(String(params.get("actor_token") || ""))) {
+        return send(res, 400, { error: "actor_token_required" });
+      }
+      if (!state.users.has(subject)) return send(res, 404, { error: "user_not_found" });
       state.tokenExchanges += 1;
-      const token = `tok-${params.get("subject_user_id")}-${state.tokenExchanges}`;
+      const token = `tok-${subject}-${state.tokenExchanges}`;
       state.tokens.add(token);
+      state.tokenSubjects.set(token, subject);
       return send(res, 200, { access_token: token, token_type: "Bearer", expires_in: tokenTtlSeconds });
     }
 
@@ -319,6 +371,22 @@ function startFakeEncompass({
 
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
 
+    if (req.method === "GET" && url.pathname === "/encompass/v1/company/users/me") {
+      const profile = state.users.get(subjectFor(req));
+      if (!profile) return send(res, 401, { error: "unauthorized" });
+      return send(res, 200, profile);
+    }
+
+    // Encompass enforces loan visibility by the impersonated user. The fake does
+    // the same for every loan-scoped route so a stolen loan id returns 404.
+    const scopedLoanId = (url.pathname.match(/\/loans\/([^/]+)/) || [])[1];
+    if (scopedLoanId) {
+      const owner = state.loanOwners.get(decodeURIComponent(scopedLoanId));
+      if (owner && owner !== subjectFor(req) && !state.actors.has(bearerOf(req))) {
+        return send(res, 404, { error: "loan_not_found" });
+      }
+    }
+
     if (req.method === "GET" && url.pathname === "/encompass/v3/schemas/loan/standardFields") {
       state.standardSchemaCalls += 1;
       if (state.schemaFailure) return send(res, state.schemaFailure, { error: "schema_unavailable" });
@@ -345,6 +413,7 @@ function startFakeEncompass({
       state.loanCreates += 1;
       const loanId = `loan-created-${state.loanCreates}`;
       state.loans.set(loanId, { ...payload, id: loanId });
+      state.loanOwners.set(loanId, subjectFor(req));
       state.documents.set(loanId, []);
       state.conditions.set(loanId, []);
       state.milestones.set(

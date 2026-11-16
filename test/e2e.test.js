@@ -40,7 +40,7 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
     const inviteUrl = `${gateway.url}/portal?role=title&code=${encodeURIComponent(gateway.invites.title.code)}`;
     const portalPage = await request(inviteUrl);
     assert.equal(portalPage.status, 200);
-    assert.match(portalPage.body, /api_title_template/);
+    assert.match(portalPage.body, /Encompass user/);
     assert.match(portalPage.body, /646/);
 
     const rejected = await request(`${gateway.url}/portal`, {
@@ -58,10 +58,11 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
         email: "dev@acme.test",
         role: "title",
         code: gateway.invites.title.code,
+        encompassUserId: "broker-user-1",
       }),
     });
     assert.equal(provisioned.status, 200);
-    assert.equal(provisioned.body.encompassUserId, "api_title_template");
+    assert.equal(provisioned.body.encompassUserId, "broker-user-1");
     const apiKey = provisioned.body.apiKey;
     assert.equal(provisioned.body.reused, false);
     assert.ok(apiKey);
@@ -74,6 +75,7 @@ test("full vendor flow over real HTTP (production-shaped)", async () => {
         email: "dev@acme.test",
         role: "title",
         code: gateway.invites.title.code,
+        encompassUserId: "broker-user-1",
       }),
     });
     assert.equal(provisionedAgain.status, 200);
@@ -249,6 +251,7 @@ test("broker loan lifecycle over real HTTP", async () => {
         email: "broker@acme.test",
         role: "broker",
         code: gateway.invites.broker.code,
+        encompassUserId: "broker-user-1",
       }),
     });
     assert.equal(provisioned.status, 200);
